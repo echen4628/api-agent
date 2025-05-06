@@ -21,6 +21,29 @@ llm = ChatOpenAI(model=GPT_4o)
 def chatbot(state: State):
     return {"messages": [llm.invoke(state["messages"])]}
 
+def api_chatbot(state: State):
+    return {"messages": [llm.invoke(state["messages"])]}
+
+def decide_next(state: State):
+    # decides whether I need to call a tool or not
+    # check if it is an internal tool
+
+    # if so call_tools
+
+    # else end
+    pass
+
+def call_tools(state: State):
+    # call the tool
+    pass
+
+def decide_start(state: State):
+    # check if the message is a user message or a tool response
+    # 
+    # if it is a user message, call the chatbot
+    # else call the the api chatbot
+    pass
+
 
 graph_builder = StateGraph(State)
 graph_builder.add_edge(START, "chatbot")
