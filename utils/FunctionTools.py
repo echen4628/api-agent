@@ -1,5 +1,22 @@
 from utils.FunctionWrapper import FunctionWrapper
 from typing import List, Union
+import os
+import faiss
+from langchain_openai import OpenAIEmbeddings    
+from langchain_community.vectorstores import FAISS
+from langchain_community.docstore.in_memory import InMemoryDocstore
+from langchain_openai import OpenAIEmbeddings
+import json
+
+from langchain_core.documents import Document
+import logging
+import jsonpickle
+
+# Configure the logger to output debug messages to the console
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Create a logger instance
+logger = logging.getLogger(__name__)
 
 class FunctionDependencyGraph:
     def __init__(self):
@@ -28,39 +45,107 @@ class FunctionDependencyReducer:
         return graph
 
 class FunctionDatabase:
-    def __init__(self):
-        self.inputs_desc_vector_store = None
-        self.output_desc_vector_store = None
-        self.func_desc_vector_store = None
-        self.name_to_function = {}
+    def __init__(self, embedding_name, inputs_desc_vector_store_path,
+                        outputs_desc_vector_store_path, func_desc_vector_store_path,
+                        name_to_function_json_path):
+        
+        self.embeddings = OpenAIEmbeddings(model=embedding_name)
+        self.inputs_desc_vector_store_path = inputs_desc_vector_store_path
+        self.outputs_desc_vector_store_path = outputs_desc_vector_store_path
+        self.func_desc_vector_store_path = func_desc_vector_store_path
+        self.name_to_function_json_path = name_to_function_json_path
+        for vector_store_path in [inputs_desc_vector_store_path, outputs_desc_vector_store_path, func_desc_vector_store_path]:
+            if not os.path.exists(vector_store_path):
+                logger.warning(f"Cannot find vector store at {vector_store_path}")
+                logger.info(f"Creating vector store at {inputs_desc_vector_store_path}...")
+                index = faiss.IndexFlatL2(len(self.embeddings.embed_query("hello world")))
+
+                vector_store = FAISS(
+                    embedding_function=self.embeddings,
+                    index=index,
+                    docstore=InMemoryDocstore(),
+                    index_to_docstore_id={},
+                )
+                vector_store.save_local(vector_store_path)
+
+        self.inputs_desc_vector_store = FAISS.load_local(inputs_desc_vector_store_path, self.embeddings, allow_dangerous_deserialization=True)
+        self.outputs_desc_vector_store = FAISS.load_local(outputs_desc_vector_store_path, self.embeddings, allow_dangerous_deserialization=True)
+        self.func_desc_vector_store = FAISS.load_local(func_desc_vector_store_path, self.embeddings, allow_dangerous_deserialization=True)
+        
+        if os.path.exists(name_to_function_json_path):
+            with open(name_to_function_json_path, "r") as f:
+                written_instance = f.read()
+                self.name_to_function = jsonpickle.decode(written_instance)
+        else:
+            self.name_to_function = {}
+
     
     def add_function(self, function: FunctionWrapper):
+        if function.name in self.name_to_function:
+            logger.debug(f"function {function.name} is already in the database, skipping!")
+            return
         self.name_to_function[function.name] = function
 
-        # maybe these vector stores should all be combined?
-        self.inputs_desc_vector_store.insert(function.parameters)
-        self.output_desc_vector_store.insert(function.output)
-        self.func_desc_vector_store.insert(function.description)
+        func_desc_document = Document(
+            page_content=function.description,
+            metadata={"source": function.name},
+        )
+        self.inputs_desc_vector_store.add_documents(documents=[func_desc_document])
+
+        if function.parameter_leaves:
+            parameter_desc_documents = []
+            for parameter_leaf in function.parameter_leaves:
+                parameter_desc_document = Document(
+                    page_content=function.parameter_leaves[parameter_leaf],
+                    metadata={"source": parameter_leaf, "function": function.name},
+                )
+                parameter_desc_documents.append(parameter_desc_document)
+            self.inputs_desc_vector_store.add_documents(documents=parameter_desc_documents)
+        else:
+            logger.warning(f"function {function.name} does not have input parameters.")
+
+        if function.output_leaves:
+            outputs_desc_documents = []
+            for output_leaf in function.output_leaves:
+                outputs_desc_document = Document(
+                    page_content=function.output_leaves[output_leaf],
+                    metadata={"source": output_leaf, "function": function.name},
+                )
+                outputs_desc_documents.append(outputs_desc_document)
+            self.outputs_desc_vector_store.add_documents(documents=outputs_desc_documents)
+
+        else:
+            logger.warning(f"function {function.name} does not have outputs.")
+        with open(self.name_to_function_json_path, 'w') as f:
+            f.write(jsonpickle.encode(self.name_to_function))
+        self.func_desc_vector_store.save_local(self.func_desc_vector_store_path)
+        self.inputs_desc_vector_store.save_local(self.inputs_desc_vector_store_path)
+        self.outputs_desc_vector_store.save_local(self.outputs_desc_vector_store_path)
+
     
     def search(self, query) -> Union[str, FunctionWrapper]:
         # first search by function name
         if query in self.name_to_function:
             return self.name_to_function[query]
         else:
+            retriever = self.func_desc_vector_store.as_retriever(search_type="mmr", search_kwargs={"k": 3})
             # then search each of the inputs and outputs and description to see if there are any similar functions
-            desc_res = self.func_desc_vector_store.search(query)
-            # maybe extract the function name and the value match, so that this would be a Tuple
-            input_res = self.inputs_desc_vector_store.search(query)
-            output_res = self.outputs_desc_vector_store.search(query)
-            return f"No functions are exactly named query, here are the closest functions: {desc_res}, {input_res}, {output_res}."
+            desc_res = retriever.invoke(query)
+            # desc_res = self.func_desc_vector_store.search(query)
+            # # maybe extract the function name and the value match, so that this would be a Tuple
+            # input_res = self.inputs_desc_vector_store.search(query)
+            # output_res = self.outputs_desc_vector_store.search(query)
+            return desc_res
+            # return f"No functions are exactly named query, here are the closest functions: {desc_res}."
 
     def find_dependency(self, functions: List[FunctionWrapper]) -> List[FunctionWrapper]:
         for function in functions:
-            for parameter in function.parameter_leaves:
-                output_res = self.output_desc_vector_store.search(parameter)
-                # TODO: need to put the parameter name and function name in the metadata of the documents
+            retriever = self.outputs_desc_vector_store.as_retriever(search_type="mmr", search_kwargs={"k": 3, "filter":{"function": {"$neq": function.name} }})
+            for parameter, parameter_desc in function.parameter_leaves.items():
+                output_res = retriever.invoke(parameter_desc)
+                import pdb; pdb.set_trace()
                 dependency_edges = [DependencyEdge(destination=parameter, destination_func_name=function.name,
-                                            source= res.parameter_name, source_func_name=res.function_name) for res in output_res]
+                                            source= res.metadata["source"], source_func_name=res.metadata["function"]) for res in output_res]
                 function.input_dependencies[parameter] = dependency_edges
         return functions
 
@@ -80,7 +165,7 @@ class Planner:
             # extend it
             next_level = []
             for most_recent_function in graph.functions[-1]:
-                for next_function in most_recent_function.input_dependencies.values():
+                for next_function in most_recent_function.input_dependencies.items():
                     assert len(next_function) == 1
                     if next_function[0].source_function_name != "get_from_user":
                         next_level.append(self.database.name_to_function(next_function[0].source_function_name))

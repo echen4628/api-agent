@@ -8,14 +8,13 @@ class FunctionWrapper:
         self.required = list()
         self.output = None # some kind of pydantic baseclass
         self.input_dependencies = {}
-        self.parameter_leaves = list()
-        self.output_leaves = list()
+        self.parameter_leaves = None
+        self.output_leaves = None
     
     def parse(self, open_ai_json):
         self.name = open_ai_json["name"]
         self.description = open_ai_json["description"]
         self.parameters = parse_inputs_to_basemodel(open_ai_json["parameters"], f"{self.name}_input") # maybe this can be a helper function
-        import pdb; pdb.set_trace()
         self.required = open_ai_json["parameters"]["required"]
         # get the leaves of self.parameters
         self.parameter_leaves = get_leaves_of_basemodel(self.parameters)
