@@ -13,7 +13,7 @@ import logging
 import jsonpickle
 
 # Configure the logger to output debug messages to the console
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Create a logger instance
 logger = logging.getLogger(__name__)
@@ -28,6 +28,9 @@ class DependencyEdge:
         self.destination_func_name = destination_func_name
         self.source = source
         self.source_func_name = source_func_name
+    
+    def __str__(self):
+        return f"Use output {self.source} from function {self.source_func_name} as the input for {self.destination} of function {self.destination_func_name}"
 
 class FunctionDependencyReducer:
     def __init__(self):
@@ -90,7 +93,7 @@ class FunctionDatabase:
             page_content=function.description,
             metadata={"source": function.name},
         )
-        self.inputs_desc_vector_store.add_documents(documents=[func_desc_document])
+        self.func_desc_vector_store.add_documents(documents=[func_desc_document])
 
         if function.parameter_leaves:
             parameter_desc_documents = []
@@ -123,31 +126,58 @@ class FunctionDatabase:
         self.outputs_desc_vector_store.save_local(self.outputs_desc_vector_store_path)
 
     
-    def search(self, query) -> Union[str, FunctionWrapper]:
+    def search(self, query:str) -> Union[str, FunctionWrapper]:
+        '''
+        Finds the name of a function to perform the query
+        '''
         # first search by function name
         if query in self.name_to_function:
-            return self.name_to_function[query]
+            functions = [self.name_to_function[query]]
         else:
             retriever = self.func_desc_vector_store.as_retriever(search_type="mmr", search_kwargs={"k": 3})
             # then search each of the inputs and outputs and description to see if there are any similar functions
             desc_res = retriever.invoke(query)
+            functions = [self.name_to_function[desc.metadata["source"]] for desc in desc_res]
             # desc_res = self.func_desc_vector_store.search(query)
             # # maybe extract the function name and the value match, so that this would be a Tuple
             # input_res = self.inputs_desc_vector_store.search(query)
             # output_res = self.outputs_desc_vector_store.search(query)
-            return desc_res
-            # return f"No functions are exactly named query, here are the closest functions: {desc_res}."
 
-    def find_dependency(self, functions: List[FunctionWrapper]) -> List[FunctionWrapper]:
+        return "\n\n".join([self.convert_function_desc_to_str(function) for function in functions])
+
+    def convert_function_desc_to_str(self, function: FunctionWrapper, include_dependencies=False):
+        base_string = f"Function {function.name}:\n -{function.description}.\n -inputs: {function.parameter_leaves}"
+        if include_dependencies:
+            # import pdb; pdb.set_trace()
+            input_resolutions = {name: [edge.__str__() for edge in  dependency_edge] for name, dependency_edge in function.input_dependencies.items()}
+            base_string += f"\n -potential input resolutions: {input_resolutions}"
+        return base_string
+    
+    def find_dependency(self, function_names: List[str]) -> List[Union[str, FunctionWrapper]]:
+        '''
+        Applies a similarity search to find functions that could be used to provide dependencies for a list of functions with unknown dependencies.
+
+        Note that some function dependencies should instead be obtained from the user.
+        '''
+        functions = [self.name_to_function[name] for name in function_names]
         for function in functions:
             retriever = self.outputs_desc_vector_store.as_retriever(search_type="mmr", search_kwargs={"k": 3, "filter":{"function": {"$neq": function.name} }})
             for parameter, parameter_desc in function.parameter_leaves.items():
                 output_res = retriever.invoke(parameter_desc)
-                import pdb; pdb.set_trace()
                 dependency_edges = [DependencyEdge(destination=parameter, destination_func_name=function.name,
                                             source= res.metadata["source"], source_func_name=res.metadata["function"]) for res in output_res]
                 function.input_dependencies[parameter] = dependency_edges
-        return functions
+        return [self.convert_function_desc_to_str(function, include_dependencies=True) for function in functions]
+    # def find_dependency(self, functions: List[FunctionWrapper]) -> List[FunctionWrapper]:
+    #     for function in functions:
+    #         retriever = self.outputs_desc_vector_store.as_retriever(search_type="mmr", search_kwargs={"k": 3, "filter":{"function": {"$neq": function.name} }})
+    #         for parameter, parameter_desc in function.parameter_leaves.items():
+    #             output_res = retriever.invoke(parameter_desc)
+    #             import pdb; pdb.set_trace()
+    #             dependency_edges = [DependencyEdge(destination=parameter, destination_func_name=function.name,
+    #                                         source= res.metadata["source"], source_func_name=res.metadata["function"]) for res in output_res]
+    #             function.input_dependencies[parameter] = dependency_edges
+    #     return functions
 
 class Planner:
     def __init__(self, function_database: FunctionDatabase, dependency_reducer: FunctionDependencyReducer, max_depth: int):
