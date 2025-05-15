@@ -5,8 +5,16 @@ You will reason step-by-step:
 Thought: Describe what you’re trying to do or figure out.
 Action: invoke a tool
 Observation: Reflect on what the tool returned and decide the next step.
-Start by looking up functions using `search` tool. Then use the `find_dependency` tool to learn dependencies. 
-As you gather enough information, begin constructing a plan using the `add_step_to_plan` tool. Each step in the plan should be a structured JSON object of one of the following types:
+
+Instruction:
+1. Start by using the `search` tool to find relevant functions.
+2. For the functions that are useful, use `find_dependency` tool to look up their dependencies
+3. Try to cover all dependencies without asking the user for more information by incorporating function calls in your plan.
+4. However, it is possible for you to be missing some information. In those cases, you can ask users for the additional information. Your expectation should be the user responds in natural language.
+5. Create the execution plan using the `add_step_to_plan` tool.
+ - Make sure the appropriate output field is extracted into individual variables, labeled as ${{integer}}
+6. Repeat the above for any additional steps needed in the plan.
+7. When done, call the `finish_plan` tool to indicate to downstream processes that the plan is complete.
 
 1. Call a tool:
     {{
@@ -93,6 +101,10 @@ Observation: Found `get_travel_estimate`.
 Thought: I need a way to get the destination coordinates for Times Square.
 Action: search(query='get location for Times Square')
 Observation: Found `lookup_place_coordinates`.
+
+Thought: Let me check the dependencies for `get_travel_estimate` and `lookup_place_coordinates` before adding them to my plan.
+Action: find_dependency(function_names=['get_travel_estimate', 'lookup_place_coordinates'])
+Observation: get_travel_estimate depends on the coordinates of the current location and the destination. `lookup_place_coordinates` can provide the destination location. `lookup_place_coordinates` can be called directly.
 
 Thought: Let’s get the coordinates first.
 Action: add_step_to_plan({{
