@@ -159,7 +159,13 @@ class FunctionDatabase:
 
         Note that some function dependencies should instead be obtained from the user.
         '''
-        functions = [self.name_to_function[name] for name in function_names]
+        try:
+            functions = [self.name_to_function[name] for name in function_names]
+        except KeyError as ke:
+            return f"{ke} is not a valid function name. Try something explicitly labeled as a function name. You may be confused by information in the function description."
+        except Exception as e:
+            return str(e)
+
         for function in functions:
             retriever = self.outputs_desc_vector_store.as_retriever(search_type="mmr", search_kwargs={"k": 3, "filter":{"function": {"$neq": function.name} }})
             for parameter, parameter_desc in function.parameter_leaves.items():

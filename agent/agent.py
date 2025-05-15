@@ -15,7 +15,8 @@ from utils.constants import (GPT_4o,
                              INPUTS_DESC_VECTOR_STORE_PATH,
                              OUTPUT_DESC_VECTOR_STORE_PATH,
                              FUNC_DESC_VECTOR_STORE_PATH,
-                             NAME_TO_FUNCTION_JSON_PATH)
+                             NAME_TO_FUNCTION_JSON_PATH,
+                             PLANNING_AGENT_PROMPT)
 from langchain_core.tools import tool, InjectedToolArg
 
 from utils.FunctionTools import FunctionDatabase
@@ -92,9 +93,9 @@ class AddStepToPlan(BaseModel):
 def add_step_to_plan(plan_step, steps) ->str:
     try:
         steps.append(plan_step)
-        return f"Successfully added step. Now, the plan has {len(steps)} steps. The latest few steps are:\n{extract_last_k_steps(3, steps)}"
+        return f"Successfully added step. Now, the plan has {len(steps)} steps. The latest few steps are:\n{extract_last_k_steps(3, steps)}", steps
     except Exception as e:
-        return str(e)
+        return str(e), steps
 
 @tool
 def finish_plan() ->str:
@@ -112,146 +113,11 @@ tools = [add,
 memory = MemorySaver()
 llm = ChatOpenAI(model=GPT_4o)
 llm_with_tools = llm.bind_tools(tools)
+with open(PLANNING_AGENT_PROMPT, "r") as f:
+    planning_prompt = f.read()
+
 prompt_template = ChatPromptTemplate([
-    ("system", """You are a helpful coding assistant that reasons and acts step-by-step using the ReAct pattern. Your job is to search for APIs that will assist the user and then create a plan with a full dependency graph on how those APIs will be called. Note that you do not execute these APIs — your goal is to generate a correct execution plan in JSON.
-
-You will reason step-by-step:
-
-Thought: Describe what you’re trying to do or figure out.
-Action: invoke a tool
-Observation: Reflect on what the tool returned and decide the next step.
-Start by looking up functions using `search` tool. Then use the `find_dependency` tool to learn dependencies. 
-As you gather enough information, begin constructing a plan using the `add_step_to_plan` tool. Each step in the plan should be a structured JSON object of one of the following types:
-
-1. Call a tool:
-    {{
-      "id": 1,
-      "var": "${{1}}",
-      "action": "call",
-      "tool": "tool_name",
-      "args": {{
-        "arg1": "value1",
-        "arg2": 3.5
-      }}
-    }}
-
-2. Extract a field from a previous step’s output:
-    {{
-      "id": 2,
-      "var": "${{2}}",
-      "action": "extract",
-      "source": "${{1}}",
-      "path": "some.field.name"
-    }}
-
-3. Ask the user for input:
-    {{
-      "id": 3,
-      "var": "${{3}}",
-      "action": "ask_user",
-      "query": "your question here"
-    }}
-
-You should create the plan incrementally using the `add_step_to_plan` tool. Once you believe the plan is complete, invoke the `finish_plan` tool.
-
----
-
-Example 1:
-User: I want to analyze a dataset of GitHub repos and find which users have contributed to the most repositories.
-
-Thought: I need a function to analyze GitHub user contributions.
-Action: search(query='analyze GitHub user contributions')
-Observation: Found `analyze_user_contributions`.
-
-Thought: I should determine its dependencies.
-Action: find_dependency(function_names=['analyze_user_contributions'])
-Observation: It depends on `load_github_dataset`, `parse_contributions_log`.
-
-Thought: Therefore, I should plan to call `load_github_dataset` and `parse_contributions_log` before `analyze_user_contributions`. I will start by adding `load_github_dataset` to the plan.
-Action: add_step_to_plan({{
-  "id": 1,
-  "var": "${{1}}",
-  "action": "call",
-  "tool": "load_github_dataset",
-  "args": {{ "path": "user_provided_path" }}
-}})
-
-Thought: Next, I will add `parse_contribution_log` to the plan.
-Action: add_step_to_plan({{
-  "id": 2,
-  "var": "${{2}}",
-  "action": "call",
-  "tool": "parse_contributions_log",
-  "args": {{ "dataset": "${{1}}" }}
-}})
-
-Thought: Finally, I will add `analyze_user_contributions` to the plan.
-Action: add_step_to_plan({{
-  "id": 3,
-  "var": "${{3}}",
-  "action": "call",
-  "tool": "analyze_user_contributions",
-  "args": {{ "parsed_data": "${{2}}" }}
-}})
-
-Thought: The plan is complete.
-Action: finish_plan()
----
-
-Example 2:
-User: I want to find the duration it takes to travel from my current location to Times Square.
-
-Thought: I need a function that gets route duration between two points.
-Action: search(query='get travel duration between two points')
-Observation: Found `get_travel_estimate`.
-
-Thought: I need a way to get the destination coordinates for Times Square.
-Action: search(query='get location for Times Square')
-Observation: Found `lookup_place_coordinates`.
-
-Thought: Let’s get the coordinates first.
-Action: add_step_to_plan({{
-  "id": 1,
-  "var": "${{1}}",
-  "action": "call",
-  "tool": "lookup_place_coordinates",
-  "args": {{ "place": "Times Square" }}
-}})
-
-Thought: I should extract just the longitude.
-Action: add_step_to_plan({{
-  "id": 2,
-  "var": "${{2}}",
-  "action": "extract",
-  "source": "${{1}}",
-  "path": "longitude"
-}})
-
-Thought: I need to ask the user for their current location.
-Action: add_step_to_plan({{
-  "id": 3,
-  "var": "${{3}}",
-  "action": "ask_user",
-  "query": "What is your current location?"
-}})
-
-Thought: Now I call `get_travel_estimate` with both points.
-Action: add_step_to_plan({{
-  "id": 4,
-  "var": "${{4}}",
-  "action": "call",
-  "tool": "get_travel_estimate",
-  "args": {{
-    "origin": "${{3}}",
-    "destination_longitude": "${{2}}"
-  }}
-}})
-
-Thought: The plan is done.
-Action: finish_plan()
----
-
-Now begin helping the user. Think step by step (and annotate using Thought, Action, and Observation). Use tools when necessary. Format the plan using the structured JSON schema when you start planning."""),
+    ("system", planning_prompt),
     MessagesPlaceholder("msgs")
 ])
 
@@ -284,9 +150,10 @@ class BasicToolNode:
         for tool_call in message.tool_calls:
             if tool_call["name"] == "add_step_to_plan":
                 tool_call["args"]["steps"] = state.get("plan", [])
-                tool_result = self.tools_by_name[tool_call["name"]].invoke(
+                tool_result, steps = self.tools_by_name[tool_call["name"]].invoke(
                     tool_call["args"]
                 )
+                state["plan"] = steps
             else:
                 tool_result = self.tools_by_name[tool_call["name"]].invoke(
                     tool_call["args"]
@@ -298,7 +165,7 @@ class BasicToolNode:
                     tool_call_id=tool_call["id"],
                 )
             )
-        return {"messages": outputs}
+        return {"messages": outputs, "plan": state["plan"]}
 
 # def decide_start(state: State):
 #     # check if the message is a user message or a tool response

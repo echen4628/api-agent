@@ -1,3 +1,5 @@
 .venv
 .env
 *.pyc
+vectorstores/*
+function_registry/*
