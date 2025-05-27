@@ -3,41 +3,77 @@ from pydantic.fields import FieldInfo
 from typing import TypedDict, List, Annotated, Dict
 from copy import deepcopy
 from utils.constants import type_mapping
-# def parse_output(output):
-#     if type(output) == list:
-#         return [parse_output(output[0])]
-#     elif type(output) != dict:
-#         return type(output)
-#     else:
-#         type_repr = {}
-#         for key in output.keys():
-#             type_repr[key] = parse_output(output[key])
-#         return type_repr
 
-def parse_output(output, name):
-    if type(output) == list:
-        return list[parse_output(output[0], name)]
-    elif type(output) != dict:
-        return type(output)
-    else:
-        type_repr = {}
-        for key in output.keys():
-            type_repr[key] = deepcopy(parse_output(output[key], str(key)))
-        return TypedDict(name, type_repr)
-    
-def parse_output_to_basemodel(output, name):
+def parse_output_to_type_dict(output, name) -> Dict:
     if isinstance(output, list):
-        # Assume homogeneous list
-        inner = parse_output_to_basemodel(output[0], name + "Item")
-        return List[inner]
+        type_dict = {}
+        for inner in output:
+            temp_dict = parse_output_to_type_dict(inner, name)
+            if isinstance(temp_dict[name], dict):
+                temp_dict = temp_dict[name]
+                for key, value in temp_dict.items():
+                    if key not in type_dict:
+                        type_dict[key] = value
+                    elif type_dict[key] == int and value == float:
+                        type_dict[key] = value
+            else:
+                value = temp_dict[name]
+                if value == int:
+                    value = float
+                if type_dict == {}:
+                    type_dict = value
+                # elif type_dict == int and value == float:
+                #     type_dict = value
+            # type_dict |= parse_output_to_type_dict(inner, "")
+        return {name+'@d' : type_dict}
     elif not isinstance(output, dict):
-        return type(output)
+        if type(output) == int:
+            return {name: float}
+        return {name: type(output)}
+    else:
+        type_dict = {}
+        for key, value in output.items():
+            type_dict |= parse_output_to_type_dict(value, str(key))
+        return {name: type_dict}
+
+def parse_type_dict_to_basemodel(output, name):
+    # if isinstance(output, list):
+    #     # Assume homogeneous list
+    #     inner = parse_output_to_basemodel(output[0], "")
+    #     return List[inner]
+    if not isinstance(output, dict):
+        return output
     else:
         fields = {}
         for key, value in output.items():
-            field_type = parse_output_to_basemodel(value, name + str(key).capitalize())
-            fields[key] = (field_type, ...)
+            field_type = parse_type_dict_to_basemodel(value, str(key.strip("@d")))
+            if "@d" in key:
+                fields[key.strip("@d")] = Annotated[List[field_type], Field(default=None)]
+                # Field()
+                # (List[field_type])
+            else:
+                fields[key] = Annotated[field_type, Field(default=None)]
+                # (field_type, ...)
         return create_model(name, **fields)
+
+def parse_output_to_basemodel(output, name):
+    type_dict = parse_output_to_type_dict(output, name)
+    return parse_type_dict_to_basemodel(type_dict[name], name)
+    
+# def parse_output_to_basemodel(output, name):
+#     import pdb; pdb.set_trace()
+#     if isinstance(output, list):
+#         # Assume homogeneous list
+#         inner = parse_output_to_basemodel(output[0], name + "Item")
+#         return List[inner]
+#     elif not isinstance(output, dict):
+#         return type(output)
+#     else:
+#         fields = {}
+#         for key, value in output.items():
+#             field_type = parse_output_to_basemodel(value, name + str(key).capitalize())
+#             fields[key] = (field_type, ...)
+#         return create_model(name, **fields)
 
 def parse_inputs_to_basemodel(open_ai_json_parameter, name):
     fields = {}
@@ -100,6 +136,22 @@ def get_leaves_of_basemodel(obj, name="", prefix_description="") -> Dict[str, st
 
     return leaf_descriptions
 
+def extract_from_basemodel(obj, leaf_path):
+    current_obj = obj
+    fields = leaf_path.split(".")
+    for i in range(len(fields)):
+        field = fields[i]
+        if isinstance(current_obj, list):
+            current_obj = [extract_from_basemodel(ele, ".".join(fields[i:])) for ele in current_obj]
+            return_obj = [x[0] for x in current_obj]
+            signatures = [x[1] for x in current_obj]
+            list_signature = signatures[0].split(".")
+            list_signature[0] = list_signature[0] + "@d"
+            return return_obj, ".".join(fields[:i] + list_signature)
+        else:
+            current_obj = getattr(current_obj, field)
+    return current_obj, leaf_path
+
 class TestChild(BaseModel):
     child_field: str = Field(default="", description="this is the child field")
   
@@ -109,10 +161,137 @@ class TestParent(BaseModel):
     # : TestChild = Field(description="The child item")
 
 if __name__ == '__main__':
-    output = {'car_id': 5,
+    output = {'car_id': 5.15,
               "car_make": [{"car_brand": "BMC",
-                            "color": "Green"}, {"car_brand": "BMC",
-                            "color": "Green"}]}
+                            "color": "red",
+                            "weird": 12}, {"car_brand": "BMC",
+                            "color": "Green",
+                            "weird": 12}]}
+    output = {
+              "city": "San Diego",
+              "coordinates": {
+                "longitude": -117.215935,
+                "latitude": 32.873055
+              },
+              "country": "United States",
+              "name": "San Diego Marriott La Jolla"
+            }
+    output = {
+    'search_key': 'eyJkcml2ZXJzQWdlIjozMCwiZHJvcE9mZkRhdGVUaW1lIjoiMjAyNS0wNS0yNlQwODowMDowMCJ9',
+    'title': 'Car rentals',
+    'content': {
+        'filters': {'countLabel': '2 results'},
+        'items': [
+            {'content': {'contentType': 'carsSearchResultsSecondaryPromotional'}, 'positionInList': 1, 'type': 'SHELL_REGION_VIEW'}
+        ]
+    },
+    'type': 'cars',
+    'meta': {'response_code': 200},
+    'search_results': [
+        {
+            'vehicle_id': '123456',
+            'route_info': {
+                'pickup': {
+                    'name': 'Sample Airport',
+                    'address': '123 Sample St, Sample City, USA',
+                    'latitude': '12.3456',
+                    'longitude': '-65.4321',
+                    'location_type': 'SHUTTLE_BUS'
+                },
+                'dropoff': {
+                    'name': 'Sample Airport',
+                    'address': '123 Sample St, Sample City, USA',
+                    'latitude': '12.3456',
+                    'longitude': '-65.4321',
+                    'location_type': 'SHUTTLE_BUS'
+                }
+            },
+            'rating_info': {
+                'average': 8.1,
+                'value_for_money': 7.5,
+                'cleanliness': 8.3
+            },
+            'vehicle_info': {
+                'v_name': 'Sample Car Model',
+                'group': 'Economy',
+                'seats': '4',
+                'doors': '4',
+                'fuel_policy': 'Like for like',
+                'transmission': 'Automatic'
+            },
+            'supplier_info': {
+                'name': 'Sample Supplier',
+                'address': '123 Supplier Rd, Supplier City, USA',
+                'logo_url': 'https://example.com/logo.png'
+            },
+            'pricing_info': {
+                'price': 45.99,
+                'currency': 'USD'
+            }
+        },
+        {
+            'vehicle_id': '7891011',
+            'route_info': {
+                'pickup': {
+                    'name': 'Another Airport',
+                    'address': '456 Another St, Another City, USA',
+                    'latitude': '23.4567',
+                    'longitude': '-54.3210',
+                    'location_type': 'SHUTTLE_BUS'
+                },
+                'dropoff': {
+                    'name': 'Another Airport',
+                    'address': '456 Another St, Another City, USA',
+                    'latitude': '23.4567',
+                    'longitude': '-54.3210',
+                    'location_type': 'SHUTTLE_BUS'
+                }
+            },
+            'rating_info': {
+                'average': 7.2,
+                'value_for_money': 6.8,
+                'cleanliness': 7.5
+            },
+            'vehicle_info': {
+                'v_name': 'Another Car Model',
+                'group': 'Compact',
+                'seats': '5',
+                'doors': '4',
+                'fuel_policy': 'Full to full',
+                'transmission': 'Manual'
+            },
+            'supplier_info': {
+                'name': 'Another Supplier',
+                'address': '456 Supplier Ave, Supplier Town, USA',
+                'logo_url': 'https://example.com/another_logo.png'
+            },
+            'pricing_info': {
+                'price': 55.49,
+                'currency': 'USD'
+            }
+        }
+    ],
+    'sort': [
+        {'identifier': 'recommended', 'name': 'Recommended – best first'},
+        {'identifier': 'price_low_to_high', 'name': 'Price - lowest first'}
+    ],
+    'filter': [
+        {'id': 'carCategory', 'title': 'Car Type', 'categories': [
+            {'id': 'small', 'name': 'Small', 'count': 5},
+            {'id': 'medium', 'name': 'Medium', 'count': 10}
+        ]},
+        {'id': 'pricePerDayBuckets', 'title': 'Price per day', 'categories': [
+            {'id': 'bucket_1', 'name': 'US$0 - US$50', 'count': 3},
+            {'id': 'bucket_2', 'name': 'US$50 - US$100', 'count': 7}
+        ]}
+    ],
+    'search_context': {
+        'searchId': 'abc123-search-id',
+        'searchKey': 'eyJkcml2ZXJzQWdlIjozMCwiZHJvcE9mZkRhdGVUaW1lIjoiMjAyNS0wNS0yNlQwODowMDowMCJ9'
+    },
+    'provider': 'rentalcars'
+}
+
     
     # output = {'car_id': 5}
     # output = {'car_id': 5,
@@ -156,7 +335,13 @@ if __name__ == '__main__':
             "description": "The drop off location's `longitude`. `drop_off_longitude` can be retrieved from `api/v1/cars/searchDestination`**(Search Car Location)** endpoint in **Car Rental** collection as `longitude` inside `coordinates` object."
           }
         }}
-    type_repr = parse_output_to_basemodel(output, "bob")
+    output = {
+        "awef": [1,2.1,3,4]
+    }
+    # type_dict = parse_output_to_dict(output, "")
+
+    type_repr = parse_output_to_basemodel(output,  "")
+    # type_repr = parse_output_to_basemodel(output, "bob")
 
     # awef = TestParent()
-    leaves_descriptions = get_leaves_of_basemodel(type_repr)
+    # leaves_descriptions = get_leaves_of_basemodel(type_repr)

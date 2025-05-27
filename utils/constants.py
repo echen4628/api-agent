@@ -14,3 +14,7 @@ NAME_TO_FUNCTION_JSON_PATH = "function_registry/name_to_function.json"
 
 # prompt paths
 PLANNING_AGENT_PROMPT = "agent_prompts/planning_agent.txt"
+
+# mode
+PLANNING = "planning"
+EXECUTE = "execute"

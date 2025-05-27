@@ -4,3 +4,4 @@ langchain-openai
 faiss-cpu
 langchain-community
 jsonpickle
+pytest
