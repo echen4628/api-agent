@@ -1,6 +1,7 @@
 from pydantic import BaseModel, create_model, Field
 from pydantic.fields import FieldInfo
-from typing import TypedDict, List, Annotated, Dict
+from typing import List, Annotated, Dict
+from typing_extensions import TypedDict
 from copy import deepcopy
 from utils.constants import type_mapping
 

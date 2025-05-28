@@ -1,4 +1,5 @@
-from typing import Literal, Dict, Union, TypedDict
+from typing import Literal, Dict, Union
+from typing_extensions import TypedDict
 class APIStep(TypedDict):
     id: int
     var: str
