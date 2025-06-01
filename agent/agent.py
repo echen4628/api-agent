@@ -74,6 +74,7 @@ class AddStepToPlan(BaseModel):
 @tool(args_schema=AddStepToPlan)
 def add_step_to_plan(plan_step, steps) ->str:
     try:
+        # check if the extract makes sense
         steps.append(plan_step)
         return f"Successfully added step. Now, the plan has {len(steps)} steps. The latest few steps are:\n{extract_last_k_steps(3, steps)}", steps
     except Exception as e:
@@ -107,9 +108,11 @@ react_llm = prompt_template | llm_with_tools
 
 
 def chatbot(state: State):
+    # import pdb; pdb.set_trace()
     return {"messages": [react_llm.invoke({"msgs": state["messages"]})]}
 
 def chatbot_decide_next(state: State):
+    # import pdb; pdb.set_trace()
     ai_message = state["messages"][-1]
     if hasattr(ai_message, "tool_calls") and len(ai_message.tool_calls) > 0:
         return "call_tools"
@@ -130,28 +133,32 @@ class BasicToolNode:
         outputs = []
         print('there was a tool call')
         for tool_call in message.tool_calls:
-            if tool_call["name"] == "add_step_to_plan":
-                tool_call["args"]["steps"] = state.get("plan", [])
-                tool_result, steps = self.tools_by_name[tool_call["name"]].invoke(
-                    tool_call["args"]
+            try:
+                if tool_call["name"] == "add_step_to_plan":
+                    tool_call["args"]["steps"] = state.get("plan", [])
+                    tool_result, steps = self.tools_by_name[tool_call["name"]].invoke(
+                        tool_call["args"]
+                    )
+                    state["plan"] = steps
+                elif tool_call["name"] == "finish_plan":
+                    tool_result = self.tools_by_name[tool_call["name"]].invoke(
+                        tool_call["args"]
+                    )
+                    state['mode'] = EXECUTE
+                else:
+                    tool_result = self.tools_by_name[tool_call["name"]].invoke(
+                        tool_call["args"]
+                    )
+                outputs.append(
+                    ToolMessage(
+                        content=json.dumps(tool_result),
+                        name=tool_call["name"],
+                        tool_call_id=tool_call["id"],
+                    )
                 )
-                state["plan"] = steps
-            elif tool_call["name"] == "finish_plan":
-                tool_result = self.tools_by_name[tool_call["name"]].invoke(
-                    tool_call["args"]
-                )
-                state['mode'] = EXECUTE
-            else:
-                tool_result = self.tools_by_name[tool_call["name"]].invoke(
-                    tool_call["args"]
-                )
-            outputs.append(
-                ToolMessage(
-                    content=json.dumps(tool_result),
-                    name=tool_call["name"],
-                    tool_call_id=tool_call["id"],
-                )
-            )
+            except:
+                print("ERROR!")
+                import pdb; pdb.set_trace()
         return {"messages": outputs, "plan": state["plan"], 'mode': state['mode']}
 
 # def decide_start(state: State):
@@ -160,14 +167,25 @@ class BasicToolNode:
 #     # if it is a user message, call the chatbot
 #     # else call the the api chatbot
 #     pass
-# def initialization(state: State):
-#     state["plan"] = plan
-#     state["mode"] = PLANNING
-#     state["plan_idx"] = 0
+def initialization(state: State):
+    # import pdb; pdb.set_trace()
+    plan = state.get("plan", [])
+    if state.get("mode") != PLANNING and state.get("mode") != EXECUTE:
+        mode = PLANNING
+    else:
+        mode = state.get("mode", PLANNING)
+    plan_idx = state.get("plan_idx", 0)
+    results_cache = state.get("results_cache", {})
 
-#     return state
+    return {"plan": plan,
+            "mode": mode,
+            "plan_idx": plan_idx,
+            "results_cache": results_cache,
+            "failure": "",
+            "retry_count": 0}
 
 def tools_decide_next(state: State):
+    # import pdb; pdb.set_trace()
     if state["mode"] == EXECUTE:
         return "execute_init"
     elif state["mode"] == PLANNING:
@@ -176,6 +194,7 @@ def tools_decide_next(state: State):
         raise ValueError
 
 def execute_init(state: State):
+    # import pdb; pdb.set_trace()
     print("call the other graph here")
     # user_input = {"plan": state["plan"],
     #               "mode": EXECUTE,
@@ -191,10 +210,19 @@ def execute_init(state: State):
     #         "plan_idx": state["plan_idx"]}
 
     return None
+
+
+def planning_execution_router(state: State):
+    # import pdb; pdb.set_trace()
+    last_message = state["messages"][-1]
+    if isinstance(last_message, ToolMessage):
+        return "execute_init"
+    else:
+        return "chatbot"
 graph_builder = StateGraph(State)
 
 # nodes
-# graph_builder.add_node("initialization", initialization)
+graph_builder.add_node("initialization", initialization)
 graph_builder.add_node("chatbot", chatbot)
 tool_node = BasicToolNode(tools=tools)
 graph_builder.add_node("call_tools", tool_node)
@@ -204,9 +232,11 @@ graph_builder.add_node("call_tools", tool_node)
 graph_builder.add_node("execute_init", execute_init)
 
 # edges
-# graph_builder.add_edge(START, "initialization")
+graph_builder.add_edge(START, "initialization")
+graph_builder.add_conditional_edges("initialization", planning_execution_router)
 # graph_builder.add_edge("initialization", "chatbot")
-graph_builder.add_edge(START, "chatbot")
+# graph_builder.add_edge(START, "chatbot")
+# graph_builder.add_conditional_edges(START, planning_execution_router)
 graph_builder.add_conditional_edges("chatbot", chatbot_decide_next)
 graph_builder.add_conditional_edges("call_tools", tools_decide_next)
 graph_builder.add_edge("execute_init", END)
@@ -235,19 +265,42 @@ if __name__ == "__main__":
                                    config,
                                    stream_mode="updates"):
             for value in events.values():
-                print("Assistant:", value["messages"][-1].content)
+                if "messages" in value:
+                    print("Assistant:", value["messages"][-1].content)
 
-    plan = []
+    # plan = []
+    
+    messages = [{'type': 'ai', 'content': 'execute_call', 'tool_calls': 
+                 [{'name': 'Search_Car_Location', 
+                   'args': {'query': 'San Diego Marriott La Jolla'}, 'id': '${1}', 'type': 'tool_call'}]},
+        {'tool_call_id': '${1}', 'role': 'tool', 'name': 'Search_Car_Location', 'content': '{"status": true, "message": "Success", "data": [{"city": "San Diego", "coordinates": {"longitude": -117.215935, "latitude": 32.873055}, "country": "United States", "name": "San Diego Marriott La Jolla"}]}'}]
+    # messages.append({"role": "user", "content": query})
+    plan = [{'id': 1, 'var': '${1}', 'action': 'call', 'tool': 'Search_Car_Location', 'args': {'query': 'San Diego Marriott La Jolla'}},
+    {'id': 2, 'var': '${2}', 'action': 'extract',
+        'source': '${1}', 'path': 'coordinates.latitude'},
+    {'id': 3, 'var': '${3}', 'action': 'extract',
+        'source': '${1}', 'path': 'coordinates.longitude'},
+    {'id': 4, 'var': '${4}', 'action': 'call', 'tool': 'Search_Car_Rentals', 'args': {'pick_up_date': '2024-10-14', 'pick_up_time': '08:00', 'drop_off_date': '2024-10-15',
+                                                                                        'drop_off_time': '08:00', 'pick_up_latitude': '${2}', 'pick_up_longitude': '${3}', 'drop_off_latitude': '${2}', 'drop_off_longitude': '${3}'}},
+    {'id': 5, 'var': '${5}', 'action': 'call', 'tool': 'Search_Car_Rentals', 'args': {'pick_up_date': '2024-10-15', 'pick_up_time': '08:00', 'drop_off_date': '2024-10-16', 'drop_off_time': '08:00', 'pick_up_latitude': '${2}', 'pick_up_longitude': '${3}', 'drop_off_latitude': '${2}', 'drop_off_longitude': '${3}'}}]
 
-    while True:
-        user_input_message = input("User: ")
-        if user_input_message.lower() in ["quit", "exit", "q"]:
-            print("Goodbye!")
-            break
-        user_input: State = { "plan": plan,
-                        "mode": PLANNING,
-                        "plan_idx": 0,
-                        "results_cache": {},
-                        "messages": [{"role": "user", "content": user_input_message}]}
+    mode="execute"
+    plan_idx = 0
+    results_cache={}
+    user_input: State = {"plan": plan,
+                        "mode": mode,
+                        "plan_idx": plan_idx,
+                        "results_cache": results_cache,
+                        "messages": messages}
+    # user_input: State = {"messages": [{"role": "user", "content": "Today is October 13th, 2024. I want to rent a car for a day at the San Diego Marriott La Jolla. Could you compare the price differences for picking up the car at 8 AM tomorrow and the day after tomorrow at the same place for a 24-hour rental?"}]}
+    stream_graph_updates(user_input)
 
-        stream_graph_updates(user_input)
+
+    # while True:
+    #     user_input_message = input("User: ")
+    #     if user_input_message.lower() in ["quit", "exit", "q"]:
+    #         print("Goodbye!")
+    #         break
+    #     user_input: State = {"messages": [{"role": "user", "content": user_input_message}]}
+
+    #     stream_graph_updates(user_input)

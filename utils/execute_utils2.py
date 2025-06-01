@@ -2,6 +2,7 @@ from utils.parse_functions import (parse_output_to_basemodel,
                                    extract_from_basemodel)
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel
+from pydantic_core import from_json
 
 import json
 from planning.steps import (APIStep,
@@ -11,6 +12,7 @@ from planning.steps import (APIStep,
 
 from langchain_core.messages import ToolMessage, AIMessage
 from langchain_core.messages.tool import ToolCall
+from langchain_core.runnables import RunnablePassthrough
 
 
 from typing_extensions import TypedDict
@@ -27,11 +29,14 @@ from utils.constants import (GPT_4o,
                              NAME_TO_FUNCTION_JSON_PATH,
                              PLANNING_AGENT_PROMPT,
                              PLANNING,
-                             EXECUTE)
+                             EXECUTE,
+                             EXTRACT_RETRY_AGENT_SYSTEM_PROMPT,
+                             EXTRACT_RETRY_AGENT_USER_PROMPT)
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from execution.dummy_functions import name_to_functions
 from agent.state import State
+from itertools import product
 
 
 # class CacheEntry:
@@ -135,21 +140,12 @@ class BasicToolNode:
                         tool_call_id=tool_call["id"],
                     )
                 )
-            if not has_failures:
-                state['plan_idx'] += 1
+            # if not has_failures:
+            #     state['plan_idx'] += 1
 
         return {"messages": outputs, "plan": state["plan"], 'mode': state['mode'],
                 'plan_idx': state['plan_idx'], "results_cache": state["results_cache"]}
 
-
-
-def initialization(state: State):
-    # state["plan"] = plan
-    # state["mode"] = EXECUTE
-    # state["plan_idx"] = 0
-    # state["results_cache"] = {}
-
-    return state
 
 
 def tools_decide_next(state: State):
@@ -164,20 +160,16 @@ def tools_decide_next(state: State):
 
 
 def execution_router(state: State):
-    # if the step is awf
-    #   run the code and then store the result in a cache
-    # elif the step is ask_user
-    #   call an llm, to ask user for the question, then return the exact string used for that value
-    # elif the step is extract
-    #   run the code to extract the value
-    # -> router first
-    # router -> a step when the step is done (how to pass the current step? there needs to be another state here) -> router
-    # if there are no more steps -> router is done
-    # if there is an error, router will call a tool to swap
-    # otherwise, the result will be returned to the main agent
-    # maybe the planning agent can be planning and answering
-    # import pdb
-    # pdb.set_trace()
+    import pdb; pdb.set_trace()
+    last_message = state["messages"][-1]
+
+    # First check if the execution is in progress already
+    if isinstance(last_message, ToolMessage):
+        if "error" in last_message.content:
+            return "execute_call_by_llm" # use the llm to resolve the error
+        elif '"plan finished"' != last_message.content: # this is an internal message not a tool response part of execution
+            return "handle_tool_responses"
+
     plan_idx = state['plan_idx']
     if plan_idx >= len(state['plan']):
         print("got to end!!!!")
@@ -190,6 +182,7 @@ def execution_router(state: State):
                 break
         if needs_llm:
             return "execute_call_use_llm"
+        print('going to execute_call')
         return "execute_call"
     elif state['plan'][plan_idx]['action'] == 'ask_user':
         return "execute_ask_user"
@@ -199,21 +192,43 @@ def execution_router(state: State):
 
 
 def execute_call(state: State):
-    # import pdb
-    # pdb.set_trace()
+    import pdb; pdb.set_trace()
     plan_idx = state['plan_idx']
     step: APIStep = state['plan'][plan_idx]  # type: ignore
 
+    all_args = []
     for arg_name in step["args"]:
         arg = step["args"][arg_name]
-        if isinstance(arg, str) and '$' == arg[0] and "@d" not in state["results_cache"][arg][1].split(".")[0]:
-            step["args"][arg_name] = state["results_cache"][arg][0]
+        # if isinstance(arg, str) and '$' == arg[0] and "@d" not in state["results_cache"][arg][1].split(".")[0]:
+        #     step["args"][arg_name] = state["results_cache"][arg][0]
+        if isinstance(arg, str) and '$' == arg[0]:
+            if "@d" not in state["results_cache"][arg][1]:
+                all_args.append([state["results_cache"][arg][0]])
+            else:
+                all_args.append(state["results_cache"][arg][0])
+        else:
+            all_args.append([arg])
+    import pdb; pdb.set_trace()
+    all_args_product = product(*all_args)
+    tool_calls = []
+    for i, all_arg in enumerate(all_args_product):
+        args_dict = {}
+        for arg, arg_name in zip(all_arg,  step["args"]):
+            args_dict[arg_name] = arg
+        if i == 0:
+            tool_id = step["var"]
+        else:
+            tool_id = step["var"] + "_"+str(i)
+        tool_call = ToolCall(name=step['tool'],
+                        args=args_dict,
+                        id=tool_id)
+        tool_calls.append(tool_call)
 
 
-    tool_call = ToolCall(name=step['tool'],
-                         args=step["args"],
-                         id=step["var"])
-    return {"messages": [AIMessage(content="execute_call", tool_calls=[tool_call])]}
+    # tool_call = ToolCall(name=step['tool'],
+    #                      args=step["args"],
+    #                      id=step["var"])
+    return {"messages": [AIMessage(content="execute_call", tool_calls=tool_calls)]}
 
 # class APIStep(TypedDict):
 #     id: int
@@ -228,25 +243,137 @@ def execute_ask_user(state: State):
 
 
 def execute_extract(state: State):
+    import pdb; pdb.set_trace()
     plan_idx = state['plan_idx']
     step: ExtractStep = state['plan'][plan_idx]  # type: ignore
     # import pdb
     # pdb.set_trace()
-    state["results_cache"][step['var']] = extract_from_basemodel(
-        state["results_cache"][step['source']], step['path'])
-    state['plan_idx'] += 1
+    try:
+        state["results_cache"][step['var']] = extract_from_basemodel(
+            state["results_cache"][step['source']][0], step['path'])
+        state['plan_idx'] += 1
+        state['retry_count'] = 0
+    except Exception as e:
+        state['failure'] = str(e)
     return state
+
+def execute_extract_decide_next(state: State):
+    if state["failure"]:
+        return "handle_extraction_errors"
+    else:
+        return "execute_init"
+
+    # import pdb; pdb.set_trace()
+    # plan_idx = state['plan_idx']
+    # step: ExtractStep = state['plan'][plan_idx]  # type: ignore
+    # # import pdb
+    # # pdb.set_trace()
+    # if "@d" in state["results_cache"][step['source']][1]:
+    #     temp_outputs = []
+    #     for current in state["results_cache"][step['source']][0]:
+    #         temp_outputs.append(extract_from_basemodel(state["results_cache"][step['source']][0], step['path']))
+    # else:
+    #     state["results_cache"][step['var']] = extract_from_basemodel(
+    #         state["results_cache"][step['source']][0], step['path'])
+    # state['plan_idx'] += 1
+    # return state
 
 
 def execute_init(state: State):
     return state
 
+from utils.FunctionTools import FunctionDatabase
+functionDatabase = FunctionDatabase(TEXT_EMBEDDING_3_LARGE,
+                                    INPUTS_DESC_VECTOR_STORE_PATH,
+                                    OUTPUT_DESC_VECTOR_STORE_PATH,
+                                    FUNC_DESC_VECTOR_STORE_PATH,
+                                    NAME_TO_FUNCTION_JSON_PATH )
+
+def handle_tool_responses(state: State):
+    import pdb; pdb.set_trace()
+    step = state["plan"][state["plan_idx"]]
+    assert step['action'] == "call"
+    starting_tool_message_id = len(state["messages"])-1
+    has_list = False
+    temp_outputs = []
+    while "_" in state["messages"][starting_tool_message_id].tool_call_id:
+        starting_tool_message_id -= 1
+        has_list = True
+    function_name = step['tool']
+
+    for i in range(starting_tool_message_id, len(state["messages"])):
+        tool_message = state["messages"][i]
+        tool_message_content = from_json(tool_message.content)
+        output_repr = parse_output_to_basemodel({"data": tool_message_content["data"]}, f"{function_name}_output")
+        if output_repr:
+            temp_outputs.append(output_repr.model_validate({"data": tool_message_content["data"]}))
+            # state["messages"].append(AIMessage(content=f"Successfully called and processed call (ID: {tool_message.tool_call_id})."))
+        else:
+            print("couldn't find the expected output")
+            import pdb; pdb.set_trace()
+        
+        tool_call_id = state["messages"][i].tool_call_id
+        if has_list:
+            state['results_cache'][tool_call_id] = [temp_outputs, tool_call_id+"@d"]
+        else:
+            state['results_cache'][tool_call_id] = [temp_outputs[0], tool_call_id]
+        state["messages"].append(AIMessage(content=f"Successfully called and processed call (ID: {tool_call_id})."))
+
+            # output_repr.model_validate({"data": tool_message_content["data"]}), state["messages"][i].tool_message_id]
+        
+        state["plan_idx"] += 1
+
+
+    # expected_output = functionDatabase.name_to_function[function_name].output
+    # # import pdb; pdb.set_trace()
+    # if expected_output:
+    #     state['results_cache'][tool_message["id"]] = expected_output.model_validate(tool_message)
+    #     state["plan_idx"] += 1
+    # else:
+    #     print("couldn't find the expected output")
+    #     import pdb; pdb.set_trace()
+    return state
+
+# def initial_routing(state: State):
+#     import pdb; pdb.set_trace()
+#     last_message = state["messages"][-1]
+#     if isinstance(last_message, ToolMessage):
+#         if "error" in last_message.content:
+#             return "execute_call_by_llm"
+#         return "handle_tool_responses"
+#     else:
+#         return "execution_router"
+#     # if the message is a tool result, go to adding to cache (checks if it has error)
+#     # otherwise go to execute_extract
+
+extract_step_llm = llm.with_structured_output(ExtractStep)
+with open(EXTRACT_RETRY_AGENT_SYSTEM_PROMPT, "r") as f:
+    extract_retry_agent_system_template = f.read()
+
+with open(EXTRACT_RETRY_AGENT_USER_PROMPT, "r") as f:
+    extract_retry_user_system_template = f.read()
+
+extract_retry_prompt_template = ChatPromptTemplate([
+    ("system", extract_retry_agent_system_template),
+    ("user", extract_retry_user_system_template)
+])
+extract_step_llm_chain =  extract_retry_prompt_template | extract_step_llm
+def handle_extraction_errors(state: State):
+    import pdb; pdb.set_trace()
+    if state["retry_count"] >= 3:
+        raise Exception(f"Trying to address error {state['failure']} but reached retry maximum of {3}.")
+    plan_idx = state["plan_idx"]
+    step: ExtractStep = state['plan'][plan_idx]  # type: ignore
+    state['plan'][plan_idx] = extract_step_llm_chain.invoke({"current_extract_step": step,
+                                   "error_message": state["failure"],
+                                   "overall_plan": state["plan"]})
+    
+    state["failure"] = ""
+    return state
 
 graph_builder = StateGraph(State)
 
 # nodes
-
-graph_builder.add_node("initialization", initialization)
 
 tool_node = BasicToolNode(tools=tools)
 graph_builder.add_node("call_tools", tool_node)
@@ -255,16 +382,21 @@ graph_builder.add_node("execute_call", execute_call)
 graph_builder.add_node("execute_ask_user", execute_ask_user)
 graph_builder.add_node("execute_extract", execute_extract)
 graph_builder.add_node("execute_init", execute_init)
+graph_builder.add_node("handle_tool_responses", handle_tool_responses)
+graph_builder.add_node("handle_extraction_errors", handle_extraction_errors)
 
 # edges
-graph_builder.add_edge(START, "initialization")
-graph_builder.add_edge("initialization", "execute_init")
+graph_builder.add_conditional_edges(START, execution_router)
+graph_builder.add_conditional_edges("handle_tool_responses", execution_router)
 graph_builder.add_conditional_edges("execute_init", execution_router)
 graph_builder.add_conditional_edges(
     "execute_call_by_llm", execute_call_by_llm_decide_next)
-graph_builder.add_edge("execute_call", "call_tools")
+# graph_builder.add_edge("execute_call", "call_tools")
+graph_builder.add_edge("execute_call", END)
 graph_builder.add_conditional_edges("call_tools", tools_decide_next)
-graph_builder.add_edge("execute_extract", "execute_init")
+# graph_builder.add_edge("execute_extract", "execute_init")
+graph_builder.add_conditional_edges("execute_extract", execute_extract_decide_next)
+graph_builder.add_edge("handle_extraction_errors", "execute_init")
 
 # TODO: execute_ask_user prob needs to be changed
 graph_builder.add_edge("execute_ask_user", "execute_init")
@@ -302,4 +434,8 @@ if __name__ == "__main__":
                   "plan_idx": 0,
                   "results_cache": {},
                     "messages": [{"role": "user", "content": user_input_message}]}
-    stream_graph_updates(user_input)
+    # stream_graph_updates(user_input)
+    final_message = execute_subgraph.invoke(user_input,
+                                   config)
+    
+

@@ -1,5 +1,5 @@
 from utils.FunctionWrapper import FunctionWrapper
-from typing import List, Union
+from typing import List, Union, Dict
 import os
 import faiss
 from langchain_openai import OpenAIEmbeddings    
@@ -11,6 +11,7 @@ import json
 from langchain_core.documents import Document
 import logging
 import jsonpickle
+import pickle
 
 # Configure the logger to output debug messages to the console
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -75,15 +76,18 @@ class FunctionDatabase:
         self.outputs_desc_vector_store = FAISS.load_local(outputs_desc_vector_store_path, self.embeddings, allow_dangerous_deserialization=True)
         self.func_desc_vector_store = FAISS.load_local(func_desc_vector_store_path, self.embeddings, allow_dangerous_deserialization=True)
         
+        self.name_to_function: Dict[str, FunctionWrapper] = {}
         if os.path.exists(name_to_function_json_path):
             with open(name_to_function_json_path, "r") as f:
                 written_instance = f.read()
                 self.name_to_function = jsonpickle.decode(written_instance)
-        else:
-            self.name_to_function = {}
+            # with open(name_to_function_json_path, "rb") as f:
+            #     self.name_to_function = pickle.load(f)
+
 
     
     def add_function(self, function: FunctionWrapper):
+        # import pdb; pdb.set_trace()
         if function.name in self.name_to_function:
             logger.debug(f"function {function.name} is already in the database, skipping!")
             return
@@ -119,8 +123,12 @@ class FunctionDatabase:
 
         else:
             logger.warning(f"function {function.name} does not have outputs.")
+        if not os.path.exists(self.name_to_function_json_path):
+            os.makedirs( os.path.dirname(self.name_to_function_json_path))
         with open(self.name_to_function_json_path, 'w') as f:
             f.write(jsonpickle.encode(self.name_to_function))
+        # with open(self.name_to_function_json_path, 'wb') as f:
+        #     pickle.dump(self.name_to_function, f)
         self.func_desc_vector_store.save_local(self.func_desc_vector_store_path)
         self.inputs_desc_vector_store.save_local(self.inputs_desc_vector_store_path)
         self.outputs_desc_vector_store.save_local(self.outputs_desc_vector_store_path)

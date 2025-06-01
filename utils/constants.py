@@ -3,6 +3,8 @@ GPT_4o = "gpt-4o"
 type_mapping = {
     "number": float,
     "string": str,
+    "array": list,
+    'object': object
 }
 
 
@@ -14,6 +16,8 @@ NAME_TO_FUNCTION_JSON_PATH = "function_registry/name_to_function.json"
 
 # prompt paths
 PLANNING_AGENT_PROMPT = "agent_prompts/planning_agent.txt"
+EXTRACT_RETRY_AGENT_SYSTEM_PROMPT = "agent_prompts/extract_retry_agent_system_prompt.txt"
+EXTRACT_RETRY_AGENT_USER_PROMPT = "agent_prompts/extract_retry_agent_user_prompt.txt"
 
 # mode
 PLANNING = "planning"

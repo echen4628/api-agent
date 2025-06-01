@@ -37,6 +37,12 @@ def parse_output_to_type_dict(output, name) -> Dict:
             type_dict |= parse_output_to_type_dict(value, str(key))
         return {name: type_dict}
 
+def strip_phrase_from_end(s: str, phrase: str):
+    if s.endswith(phrase):
+        return s[:len(s)-len(phrase)]
+    else:
+        return s
+
 def parse_type_dict_to_basemodel(output, name):
     # if isinstance(output, list):
     #     # Assume homogeneous list
@@ -47,9 +53,10 @@ def parse_type_dict_to_basemodel(output, name):
     else:
         fields = {}
         for key, value in output.items():
-            field_type = parse_type_dict_to_basemodel(value, str(key.strip("@d")))
+            field_type = parse_type_dict_to_basemodel(value, strip_phrase_from_end(key, "@d"))
             if "@d" in key:
-                fields[key.strip("@d")] = Annotated[List[field_type], Field(default=None)]
+                fields[strip_phrase_from_end(key, "@d")] = Annotated[List[field_type], Field(default=None)]
+                # fields[key.strip("@d")] = Annotated[List[field_type], Field(default=None)]
                 # Field()
                 # (List[field_type])
             else:
@@ -58,6 +65,7 @@ def parse_type_dict_to_basemodel(output, name):
         return create_model(name, **fields)
 
 def parse_output_to_basemodel(output, name):
+    # import pdb; pdb.set_trace()
     type_dict = parse_output_to_type_dict(output, name)
     return parse_type_dict_to_basemodel(type_dict[name], name)
     
@@ -79,7 +87,7 @@ def parse_output_to_basemodel(output, name):
 def parse_inputs_to_basemodel(open_ai_json_parameter, name):
     fields = {}
     for key, value in open_ai_json_parameter["properties"].items():
-        fields[key] = Annotated[type_mapping[value['type']], Field(description=value['description'])]
+        fields[key] = Annotated[type_mapping[value['type']], Field(description=value.get("description", None))]
     return create_model(name, **fields)
             
 # def get_leaves_of_basemodel(obj, dict, name) -> Dict:
@@ -137,20 +145,62 @@ def get_leaves_of_basemodel(obj, name="", prefix_description="") -> Dict[str, st
 
     return leaf_descriptions
 
+# def extract_from_basemodel(obj, leaf_path):
+#     current_obj = obj
+#     fields = leaf_path.split(".")
+#     for i in range(len(fields)):
+#         field = fields[i]
+#         if isinstance(current_obj, list):
+#             current_obj = [extract_from_basemodel(ele, ".".join(fields[i:])) for ele in current_obj]
+#             return_obj = [x[0] for x in current_obj]
+#             signatures = [x[1] for x in current_obj]
+#             list_signature = signatures[0].split(".")
+#             list_signature[0] = list_signature[0] + "@d"
+#             return return_obj, ".".join(fields[:i] + list_signature)
+#         else:
+#             current_obj = getattr(current_obj, field)
+#     return current_obj, leaf_path
+def extract_from_basemodel_helper(obj, leaf_path):
+    current_obj = obj
+    fields = leaf_path.split(".")
+    try:
+        for i in range(len(fields)):
+            field = fields[i]
+            if isinstance(current_obj, list):
+                current_obj = [extract_from_basemodel(ele, ".".join(fields[i:])) for ele in current_obj]
+                return_obj = [x[0] for x in current_obj]
+                signatures = [x[1] for x in current_obj]
+                list_signature = signatures[0].split(".")
+                list_signature[0] = list_signature[0] + "@d"
+                return return_obj, ".".join(fields[:i] + list_signature)
+            else:
+                current_obj = getattr(current_obj, field)              
+        return current_obj, leaf_path
+    except:
+        raise 
+import difflib
+
 def extract_from_basemodel(obj, leaf_path):
     current_obj = obj
     fields = leaf_path.split(".")
-    for i in range(len(fields)):
-        field = fields[i]
-        if isinstance(current_obj, list):
-            current_obj = [extract_from_basemodel(ele, ".".join(fields[i:])) for ele in current_obj]
-            return_obj = [x[0] for x in current_obj]
-            signatures = [x[1] for x in current_obj]
-            list_signature = signatures[0].split(".")
-            list_signature[0] = list_signature[0] + "@d"
-            return return_obj, ".".join(fields[:i] + list_signature)
-        else:
-            current_obj = getattr(current_obj, field)
+    try:
+        for i in range(len(fields)):
+            field = fields[i]
+            if isinstance(current_obj, list):
+                current_obj = [extract_from_basemodel_helper(ele, ".".join(fields[i:])) for ele in current_obj]
+                return_obj = [x[0] for x in current_obj]
+                signatures = [x[1] for x in current_obj]
+                list_signature = signatures[0].split(".")
+                list_signature[0] = list_signature[0] + "@d"
+                return return_obj, ".".join(fields[:i] + list_signature)
+            else:
+                current_obj = getattr(current_obj, field)
+    except:
+        valid_leaves = get_leaves_of_basemodel(obj.__class__)
+        valid_leaves.keys()
+        suggestions = difflib.get_close_matches(leaf_path, valid_leaves, n=10, cutoff=0.3)
+        suggestion_msg = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+        raise AttributeError(f"Path '{leaf_path}' does not exist.{suggestion_msg}")
     return current_obj, leaf_path
 
 class TestChild(BaseModel):
@@ -292,6 +342,8 @@ if __name__ == '__main__':
     },
     'provider': 'rentalcars'
 }
+    # output = {'car_id': 5,
+    #           'car_colors': ['red', 'blue']}
 
     
     # output = {'car_id': 5}
@@ -336,9 +388,9 @@ if __name__ == '__main__':
             "description": "The drop off location's `longitude`. `drop_off_longitude` can be retrieved from `api/v1/cars/searchDestination`**(Search Car Location)** endpoint in **Car Rental** collection as `longitude` inside `coordinates` object."
           }
         }}
-    output = {
-        "awef": [1,2.1,3,4]
-    }
+    # output = {
+    #     "awef": [1,2.1,3,4]
+    # }
     # type_dict = parse_output_to_dict(output, "")
 
     type_repr = parse_output_to_basemodel(output,  "")
