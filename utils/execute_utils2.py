@@ -1,5 +1,6 @@
 from utils.parse_functions import (parse_output_to_basemodel,
-                                   extract_from_basemodel)
+                                   extract_from_basemodel,
+                                   extract_from_dict)
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel
 from pydantic_core import from_json
@@ -61,20 +62,21 @@ memory = MemorySaver()
 llm = ChatOpenAI(model=GPT_4o)
 llm_with_tools = llm.bind_tools(tools)
 
-# TODO: Fix prompt
-with open(PLANNING_AGENT_PROMPT, "r") as f:
-    execute_prompt = f.read()
+# # TODO: Fix prompt
+# with open(PLANNING_AGENT_PROMPT, "r") as f:
+#     execute_prompt = f.read()
 
-prompt_template = ChatPromptTemplate([
-    ("system", execute_prompt),
-    MessagesPlaceholder("msgs")
-])
+# prompt_template = ChatPromptTemplate([
+#     ("system", execute_prompt),
+#     MessagesPlaceholder("msgs")
+# ])
 
-execute_call_prompt_llm = prompt_template | llm_with_tools
+# execute_call_prompt_llm = prompt_template | llm_with_tools
 
 
 def execute_call_by_llm(state: State):
-    return {"messages": [execute_call_prompt_llm.invoke({"msgs": state["messages"]})]}
+    return state
+    # return {"messages": [execute_call_prompt_llm.invoke({"msgs": state["messages"]})]}
 
 
 def execute_call_by_llm_decide_next(state: State):
@@ -160,7 +162,7 @@ def tools_decide_next(state: State):
 
 
 def execution_router(state: State):
-    import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
     last_message = state["messages"][-1]
 
     # First check if the execution is in progress already
@@ -192,7 +194,7 @@ def execution_router(state: State):
 
 
 def execute_call(state: State):
-    import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
     plan_idx = state['plan_idx']
     step: APIStep = state['plan'][plan_idx]  # type: ignore
 
@@ -208,7 +210,7 @@ def execute_call(state: State):
                 all_args.append(state["results_cache"][arg][0])
         else:
             all_args.append([arg])
-    import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
     all_args_product = product(*all_args)
     tool_calls = []
     for i, all_arg in enumerate(all_args_product):
@@ -243,13 +245,19 @@ def execute_ask_user(state: State):
 
 
 def execute_extract(state: State):
-    import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
     plan_idx = state['plan_idx']
     step: ExtractStep = state['plan'][plan_idx]  # type: ignore
     # import pdb
     # pdb.set_trace()
     try:
-        state["results_cache"][step['var']] = extract_from_basemodel(
+        if isinstance(state["results_cache"][step['source']][0], dict):
+            print(f"extract from a dictionary, {step['path']}")
+            state["results_cache"][step['var']] = extract_from_dict(
+            state["results_cache"][step['source']][0], step['path'])
+        else:
+            print(f"extract from a base model: {step['path']}")
+            state["results_cache"][step['var']] = extract_from_basemodel(
             state["results_cache"][step['source']][0], step['path'])
         state['plan_idx'] += 1
         state['retry_count'] = 0
@@ -290,7 +298,7 @@ functionDatabase = FunctionDatabase(TEXT_EMBEDDING_3_LARGE,
                                     NAME_TO_FUNCTION_JSON_PATH )
 
 def handle_tool_responses(state: State):
-    import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
     step = state["plan"][state["plan_idx"]]
     assert step['action'] == "call"
     starting_tool_message_id = len(state["messages"])-1
@@ -304,9 +312,13 @@ def handle_tool_responses(state: State):
     for i in range(starting_tool_message_id, len(state["messages"])):
         tool_message = state["messages"][i]
         tool_message_content = from_json(tool_message.content)
+        # import pdb; pdb.set_trace()
         output_repr = parse_output_to_basemodel({"data": tool_message_content["data"]}, f"{function_name}_output")
         if output_repr:
-            temp_outputs.append(output_repr.model_validate({"data": tool_message_content["data"]}))
+            try:
+                temp_outputs.append(output_repr.model_validate({"data": tool_message_content["data"]}))
+            except:
+                import pdb; pdb.set_trace()
             # state["messages"].append(AIMessage(content=f"Successfully called and processed call (ID: {tool_message.tool_call_id})."))
         else:
             print("couldn't find the expected output")
@@ -359,9 +371,10 @@ extract_retry_prompt_template = ChatPromptTemplate([
 ])
 extract_step_llm_chain =  extract_retry_prompt_template | extract_step_llm
 def handle_extraction_errors(state: State):
-    import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
     if state["retry_count"] >= 3:
         raise Exception(f"Trying to address error {state['failure']} but reached retry maximum of {3}.")
+    state["retry_count"] += 1
     plan_idx = state["plan_idx"]
     step: ExtractStep = state['plan'][plan_idx]  # type: ignore
     state['plan'][plan_idx] = extract_step_llm_chain.invoke({"current_extract_step": step,

@@ -20,4 +20,4 @@ class AskUserStep(TypedDict):
     action: Literal['ask_user'] 
     query: str
 
-Step = Union[APIStep, ExtractStep, AskUserStep]
+Step = Union[APIStep, ExtractStep]

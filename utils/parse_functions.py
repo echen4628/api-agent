@@ -1,6 +1,6 @@
 from pydantic import BaseModel, create_model, Field
 from pydantic.fields import FieldInfo
-from typing import List, Annotated, Dict
+from typing import List, Annotated, Dict, Union
 from typing_extensions import TypedDict
 from copy import deepcopy
 from utils.constants import type_mapping
@@ -123,7 +123,7 @@ def get_leaves_of_basemodel(obj, name="", prefix_description="") -> Dict[str, st
                 leaf_descriptions |= get_leaves_of_basemodel(annotation, name, prefix_description+description if description else prefix_description)
         
         # Primitive field
-        elif obj.annotation in [str, int, float, bool]:
+        elif obj.annotation in [str, int, float, bool, object]:
             if prefix_description: 
                 leaf_descriptions[name] = prefix_description + " -> " + (obj.description or name)
             else:
@@ -141,7 +141,7 @@ def get_leaves_of_basemodel(obj, name="", prefix_description="") -> Dict[str, st
         leaf_descriptions |= get_leaves_of_basemodel(obj.__args__[0], name, prefix_description)
     
     else:
-        import pdb; pdb.set_trace()
+        raise
 
     return leaf_descriptions
 
@@ -201,6 +201,66 @@ def extract_from_basemodel(obj, leaf_path):
         suggestions = difflib.get_close_matches(leaf_path, valid_leaves, n=10, cutoff=0.3)
         suggestion_msg = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
         raise AttributeError(f"Path '{leaf_path}' does not exist.{suggestion_msg}")
+    return current_obj, leaf_path
+
+def extract_from_dict_helper(obj, leaf_path):
+    current_obj = obj
+    fields = leaf_path.split(".")
+    try:
+        for i in range(len(fields)):
+            field = fields[i]
+            if isinstance(current_obj, list):
+                current_obj = [extract_from_dict(ele, ".".join(fields[i:])) for ele in current_obj]
+                return_obj = [x[0] for x in current_obj]
+                signatures = [x[1] for x in current_obj]
+                list_signature = signatures[0].split(".")
+                list_signature[0] = list_signature[0] + "@d"
+                return return_obj, ".".join(fields[:i] + list_signature)
+            else:
+                current_obj = current_obj[field]
+        return current_obj, leaf_path
+    except:
+        raise
+
+def get_all_keys(d, prefix=""):
+    keys = set()
+    if isinstance(d, list):
+        for ele in d:
+            keys |= get_all_keys(ele, prefix)
+    elif not isinstance(d, dict):
+        keys.add(prefix)
+    else:
+        for key in d.keys():
+            current_name = prefix+"."+str(key) if prefix else str(key)
+            keys |= get_all_keys(d[key], prefix=current_name)
+    return keys
+
+
+def extract_from_dict(obj, leaf_path):
+    current_obj = obj
+    fields = leaf_path.split(".")
+    try:
+        for i in range(len(fields)):
+            field = fields[i]
+            if isinstance(current_obj, list):
+                current_obj = [extract_from_dict_helper(ele, ".".join(fields[i:])) for ele in current_obj]
+                return_obj = [x[0] for x in current_obj]
+                signatures = [x[1] for x in current_obj]
+                list_signature = signatures[0].split(".")
+                list_signature[0] = list_signature[0] + "@d"
+                return return_obj, ".".join(fields[:i] + list_signature)
+            else:
+                current_obj = current_obj[field]
+    except Exception:
+        # Gather all valid leaf paths
+        import pdb; pdb.set_trace()
+       
+
+        valid_leaves = list(get_all_keys(obj))
+        suggestions = difflib.get_close_matches(leaf_path, valid_leaves, n=10, cutoff=0.3)
+        suggestion_msg = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+        raise KeyError(f"Path '{leaf_path}' does not exist.{suggestion_msg}")
+    
     return current_obj, leaf_path
 
 class TestChild(BaseModel):
@@ -392,8 +452,15 @@ if __name__ == '__main__':
     #     "awef": [1,2.1,3,4]
     # }
     # type_dict = parse_output_to_dict(output, "")
-
+    import json
+    with open("some_data.json", "r") as f:
+        output = json.load(f)
     type_repr = parse_output_to_basemodel(output,  "")
+
+    small_obj = {"awef": "a",
+                 "bawef": "b",
+                 "cawef": {"dawef": "a",
+                           "cawef": "fawef"}}
     # type_repr = parse_output_to_basemodel(output, "bob")
 
     # awef = TestParent()

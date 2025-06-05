@@ -1,4 +1,4 @@
-from agent.agent import graph
+from agent.agent import graph, functionDatabase
 from agent.state import State
 
 from fastapi import FastAPI, Request
@@ -69,15 +69,15 @@ async def invoke_custom(request: Request):
     payload = await request.json()
     input_data = payload.get("input", "")
     config_data = payload.get("config", "")
+    tools = payload.get("tools", None)
 
-    # Here you can decide what to run — a tool, an agent, or a custom chain
+    # import pdb; pdb.set_trace()
+    functionDatabase.set_tool_limitations(tools)
+    result = graph.invoke(input_data, config=config_data)
     # import pdb; pdb.set_trace()
 
-    result = graph.invoke(input_data, config=config_data)
-    import pdb; pdb.set_trace()
     # convert messages
     result["messages"] = [convert_message(message) for message in result["messages"]]
-    import pdb; pdb.set_trace()
     result["results_cache"] = {}
     print("all done!!!")
     return JSONResponse({

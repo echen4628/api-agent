@@ -83,8 +83,10 @@ class FunctionDatabase:
                 self.name_to_function = jsonpickle.decode(written_instance)
             # with open(name_to_function_json_path, "rb") as f:
             #     self.name_to_function = pickle.load(f)
+        self.tool_limitations = None
 
-
+    def set_tool_limitations(self, tools: Union[List[str], None]):
+        self.tool_limitations = tools
     
     def add_function(self, function: FunctionWrapper):
         # import pdb; pdb.set_trace()
@@ -142,9 +144,19 @@ class FunctionDatabase:
         if query in self.name_to_function:
             functions = [self.name_to_function[query]]
         else:
-            retriever = self.func_desc_vector_store.as_retriever(search_type="mmr", search_kwargs={"k": 3})
+            # import pdb; pdb.set_trace()
+            if self.tool_limitations:
+                retriever = self.func_desc_vector_store.as_retriever(search_type="mmr", search_kwargs={"k": 3, "filter": {"source": {"$in": self.tool_limitations}}})
+            else:
+                retriever = self.func_desc_vector_store.as_retriever(search_type="mmr", search_kwargs={"k": 3})
+
             # then search each of the inputs and outputs and description to see if there are any similar functions
             desc_res = retriever.invoke(query)
+
+            # if self.tool_limitations:
+            #     desc_res = retriever.invoke(query, filter={"source": {"$in": self.tool_limitations}})
+            # else:
+            #     desc_res = retriever.invoke(query)
             functions = [self.name_to_function[desc.metadata["source"]] for desc in desc_res]
             # desc_res = self.func_desc_vector_store.search(query)
             # # maybe extract the function name and the value match, so that this would be a Tuple
@@ -161,7 +173,7 @@ class FunctionDatabase:
             base_string += f"\n -potential input resolutions: {input_resolutions}"
         return base_string
     
-    def find_dependency(self, function_names: List[str]) -> List[Union[str, FunctionWrapper]]:
+    def find_dependency(self, function_names: List[str]) -> Union[List[Union[str, FunctionWrapper]], str]:
         '''
         Applies a similarity search to find functions that could be used to provide dependencies for a list of functions with unknown dependencies.
 
@@ -175,7 +187,13 @@ class FunctionDatabase:
             return str(e)
 
         for function in functions:
-            retriever = self.outputs_desc_vector_store.as_retriever(search_type="mmr", search_kwargs={"k": 3, "filter":{"function": {"$neq": function.name} }})
+            if self.tool_limitations:
+                retriever = self.outputs_desc_vector_store.as_retriever(search_type="mmr",
+                            search_kwargs={"k": 3, "filter":{"function": {"$neq": function.name,
+                                                                          "$in": self.tool_limitations} }})
+            else:
+                retriever = self.outputs_desc_vector_store.as_retriever(search_type="mmr",
+                            search_kwargs={"k": 3, "filter":{"function": {"$neq": function.name} }})
             for parameter, parameter_desc in function.parameter_leaves.items():
                 output_res = retriever.invoke(parameter_desc)
                 dependency_edges = [DependencyEdge(destination=parameter, destination_func_name=function.name,

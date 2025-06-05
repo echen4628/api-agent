@@ -87,8 +87,7 @@ def finish_plan() ->str:
     '''
     return "plan finished"
 
-tools = [add, 
-         StructuredTool.from_function(functionDatabase.search),
+tools = [StructuredTool.from_function(functionDatabase.search),
          StructuredTool.from_function(functionDatabase.find_dependency),
          add_step_to_plan,
          finish_plan]
@@ -96,7 +95,7 @@ tools = [add,
 memory = MemorySaver()
 llm = ChatOpenAI(model=GPT_4o)
 llm_with_tools = llm.bind_tools(tools)
-with open(PLANNING_AGENT_PROMPT, "r") as f:
+with open(PLANNING_AGENT_PROMPT, "r", errors="ignore") as f:
     planning_prompt = f.read()
 
 prompt_template = ChatPromptTemplate([
