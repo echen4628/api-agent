@@ -9,6 +9,7 @@ import json
 from planning.steps import (APIStep,
                             ExtractStep,
                             AskUserStep,
+                            AnswerQuestionStep,
                             Step)
 
 from langchain_core.messages import ToolMessage, AIMessage
@@ -32,7 +33,9 @@ from utils.constants import (GPT_4o,
                              PLANNING,
                              EXECUTE,
                              EXTRACT_RETRY_AGENT_SYSTEM_PROMPT,
-                             EXTRACT_RETRY_AGENT_USER_PROMPT)
+                             EXTRACT_RETRY_AGENT_USER_PROMPT,
+                             ANSWER_QUESTION_SYSTEM_PROMPT,
+                             ANSWER_QUESTION_USER_PROMPT)
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from execution.dummy_functions import name_to_functions
@@ -190,7 +193,49 @@ def execution_router(state: State):
         return "execute_ask_user"
     elif state['plan'][plan_idx]['action'] == 'extract':
         return "execute_extract"
+    elif state['plan'][plan_idx]['action'] == 'answer_question':
+        return "execute_answer_question"
     # don't forget to increment
+
+with open(ANSWER_QUESTION_SYSTEM_PROMPT, "r") as f:
+    answer_question_system_template = f.read()
+
+with open(ANSWER_QUESTION_USER_PROMPT, "r") as f:
+    answer_question_user_template = f.read()
+
+answer_question_prompt_template = ChatPromptTemplate([
+    ("system", answer_question_system_template),
+    ("user", answer_question_user_template)
+])
+answer_question_llm_chain =  answer_question_prompt_template | llm
+
+
+def execute_answer_question(state: State):
+    plan_idx = state['plan_idx']
+    step: AnswerQuestionStep = state['plan'][plan_idx]  # type: ignore
+    import pdb; pdb.set_trace()
+    all_args = {}
+    for arg_name in step["args"]:
+        arg = step["args"][arg_name]
+        if isinstance(arg, str) and '$' == arg[0]:
+            print("here")
+            all_args[arg_name] = (state["results_cache"][arg][1], state["results_cache"][arg][0])
+        else:
+            all_args[arg_name] = (state["results_cache"][arg][1], arg)
+    import pdb; pdb.set_trace()
+    # all_args_product = product(*all_args)
+    # all_args_dict = []
+    # for i, all_arg in enumerate(all_args_product):
+    #     args_dict = {}
+    #     for arg, arg_name in zip(all_arg,  step["args"]):
+    #         args_dict[arg_name] = arg
+    #     all_args_dict.append(args_dict)
+    
+    response = answer_question_llm_chain.invoke({"query": step["query"],
+                "strategy": step["strategy"],
+                "information": str(all_args)})
+    state['plan_idx'] += 1
+    return {"plan_idx": state['plan_idx'], "messages": [response]}
 
 
 def execute_call(state: State):
@@ -395,6 +440,7 @@ graph_builder.add_node("execute_call", execute_call)
 graph_builder.add_node("execute_ask_user", execute_ask_user)
 graph_builder.add_node("execute_extract", execute_extract)
 graph_builder.add_node("execute_init", execute_init)
+graph_builder.add_node("execute_answer_question", execute_answer_question)
 graph_builder.add_node("handle_tool_responses", handle_tool_responses)
 graph_builder.add_node("handle_extraction_errors", handle_extraction_errors)
 
@@ -409,6 +455,7 @@ graph_builder.add_edge("execute_call", END)
 graph_builder.add_conditional_edges("call_tools", tools_decide_next)
 # graph_builder.add_edge("execute_extract", "execute_init")
 graph_builder.add_conditional_edges("execute_extract", execute_extract_decide_next)
+graph_builder.add_conditional_edges("execute_answer_question", execution_router)
 graph_builder.add_edge("handle_extraction_errors", "execute_init")
 
 # TODO: execute_ask_user prob needs to be changed

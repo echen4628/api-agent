@@ -75,9 +75,12 @@ class AddStepToPlan(BaseModel):
 def add_step_to_plan(plan_step, steps) ->str:
     try:
         # check if the extract makes sense
+        if plan_step["action"] == "answer_question" and plan_step["args"] == {}:
+            return f"Failed to add step. This answer_question step does not contain any arguments for the agent answering the question. Please fill the 'args' fields with all the necessary variables to answer the question.", steps
         steps.append(plan_step)
         return f"Successfully added step. Now, the plan has {len(steps)} steps. The latest few steps are:\n{extract_last_k_steps(3, steps)}", steps
     except Exception as e:
+        import pdb; pdb.set_trace()
         return str(e), steps
 
 @tool
@@ -89,6 +92,7 @@ def finish_plan() ->str:
 
 tools = [StructuredTool.from_function(functionDatabase.search),
          StructuredTool.from_function(functionDatabase.find_dependency),
+         StructuredTool.from_function(functionDatabase.search_function_outputs),
          add_step_to_plan,
          finish_plan]
 

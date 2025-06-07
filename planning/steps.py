@@ -20,4 +20,11 @@ class AskUserStep(TypedDict):
     action: Literal['ask_user'] 
     query: str
 
-Step = Union[APIStep, ExtractStep]
+class AnswerQuestionStep(TypedDict):
+    id: int
+    action: Literal['answer_question']
+    query: str
+    strategy: str
+    args: Dict[str, Union[str, float, int, bool]]
+
+Step = Union[APIStep, ExtractStep, AnswerQuestionStep]

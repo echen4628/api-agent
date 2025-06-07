@@ -12,6 +12,7 @@ from langchain_core.documents import Document
 import logging
 import jsonpickle
 import pickle
+import difflib
 
 # Configure the logger to output debug messages to the console
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -135,6 +136,33 @@ class FunctionDatabase:
         self.inputs_desc_vector_store.save_local(self.inputs_desc_vector_store_path)
         self.outputs_desc_vector_store.save_local(self.outputs_desc_vector_store_path)
 
+    def search_function_outputs(self, function_name: str, query: str):
+        '''
+        If the function has less than 10 output fields, simply return all fields with their descriptions if available.
+
+        If the function has more than 10 output fields, return the top 10 most similar fields to the query.
+
+        Always returns a description of the function.
+        '''
+        if function_name not in self.name_to_function:
+            suggestions = difflib.get_close_matches(function_name, self.name_to_function.keys(), n=3, cutoff=0.3)
+            raise Exception(f"Cannot find {function_name}. Maybe you meant one of {suggestions}.")
+        func_description = self.name_to_function[function_name].description
+        if len(self.name_to_function[function_name].output_leaves) < 10:
+            return f"Function {function_name}: {func_description}\n\nOutputs:\n\n{str(self.name_to_function[function_name].output_leaves)}"
+        else:
+            retriever = self.outputs_desc_vector_store.as_retriever(search_type="mmr",
+                                    search_kwargs={"k": 10, "filter":{"function": {"$eq": function_name } }})   
+            desc_res = retriever.invoke(query)
+
+            outputs = [f"{desc.metadata['source']}: {desc.page_content}" for desc in desc_res]
+            # desc_res = self.func_desc_vector_store.search(query)
+            # # maybe extract the function name and the value match, so that this would be a Tuple
+            # input_res = self.inputs_desc_vector_store.search(query)
+            # output_res = self.outputs_desc_vector_store.search(query)
+
+            output_str = "\n\n".join(outputs)
+            return f"Function {function_name}: {func_description}\n\nOutputs:\n\n{output_str}"
     
     def search(self, query:str) -> Union[str, FunctionWrapper]:
         '''

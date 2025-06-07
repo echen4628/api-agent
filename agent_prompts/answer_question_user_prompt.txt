@@ -1,0 +1,4 @@
+The requested question is: {query}.
+The previously devised strategy is: {strategy}.
+The extracted information fields are: {information}.
+ - note that the extracted information is accompanied by a path designates where they were extracted from. "@d" represents an element of a list.
