@@ -41,7 +41,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from execution.dummy_functions import name_to_functions
 from agent.state import State
 from itertools import product
-
+from dotenv import load_dotenv
 
 # class CacheEntry:
 #     def __init__(self, signature, data, parent_id):
@@ -60,6 +60,7 @@ from itertools import product
 
 
 tools = []
+load_dotenv()
 
 memory = MemorySaver()
 llm = ChatOpenAI(model=GPT_4o)

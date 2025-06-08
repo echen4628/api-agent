@@ -29,6 +29,9 @@ from planning.steps import Step
 
 from utils.execute_utils2 import execute_subgraph
 from agent.state import State
+from dotenv import load_dotenv
+
+load_dotenv()
 
 @tool
 def add(a: int, b: int) -> int:
@@ -77,6 +80,14 @@ def add_step_to_plan(plan_step, steps) ->str:
         # check if the extract makes sense
         if plan_step["action"] == "answer_question" and plan_step["args"] == {}:
             return f"Failed to add step. This answer_question step does not contain any arguments for the agent answering the question. Please fill the 'args' fields with all the necessary variables to answer the question.", steps
+        elif plan_step["action"] == "call":
+            import pdb; pdb.set_trace()
+            function_inputs = functionDatabase.name_to_function[plan_step["tool"]].parameter_leaves
+
+            if len(plan_step["args"]) < len(function_inputs.keys()):
+                return f"Failed to add step. This function call is missing at least one arguments. Expected arguments with the following description: {function_inputs}. Received {plan_step['args'].keys()}."
+            elif len(plan_step["args"]) > len(function_inputs.keys()):
+                return f"Failed to add step. This function call has too many arguments. Expected arguments with the following description: {function_inputs}. Received {plan_step['args'].keys()}."
         steps.append(plan_step)
         return f"Successfully added step. Now, the plan has {len(steps)} steps. The latest few steps are:\n{extract_last_k_steps(3, steps)}", steps
     except Exception as e:
