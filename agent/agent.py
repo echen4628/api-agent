@@ -127,7 +127,6 @@ def add_multiple_steps_to_plan(plan_steps, steps) -> Tuple[str, List]:
                     return f"Failed to add step: {plan_step}, because its argument names do not exist: {errors}. Please make sure to extract from the following existing ones first: {existing_variables}.\n\nThe latest successfully added steps are:\n{extract_last_k_steps(3, steps)}.", steps
             elif plan_step["action"] == "extract":
                 if plan_step["source"] not in api_response_variables:
-                    # import pdb; pdb.set_trace()
                     return f"Failed to add step: {plan_step}, because its source ({plan_step['source']}) is not the output of a call step. Please make sure to extract from the relevant call step var: {api_response_variables}.\n\nThe latest successfully added steps are:\n{extract_last_k_steps(3, steps)}.", steps
             elif plan_step["action"] == "answer_question":
                 errors = []
@@ -145,18 +144,7 @@ def add_multiple_steps_to_plan(plan_steps, steps) -> Tuple[str, List]:
             return str(e)+f"\n\nThe latest successfully added steps are:\n{extract_last_k_steps(3, steps)}.", steps
     return f"Successfully added all steps. Now, the plan has {len(steps)} steps. The latest few steps are:\n{extract_last_k_steps(3, steps)}", steps
 
-# def verify_dependency_exists(step, plan):
-#     existing_variables = set()
-#     for existing_step in plan:
-#         existing_variables.add(existing_step["var"])
-#     errors = []
-#     for args in step["args"]: 
-#         if args not in existing_variables:
-#             errors.append(args)
-#     if errors:
-#         return f"The following argument names do not exist: {errors}. Please make sure to extract from the following existing ones first: {existing_variables}"
-#     else:
-#         return ""
+
 
 class FinishPlan(BaseModel):
     '''
@@ -174,12 +162,10 @@ def finish_plan(steps) -> Tuple[str, str]:
     else:
         return "Does not end the plan with `answer_question`. Please complete the plan with that step and try again.", PLANNING
 
-    return "plan finished"
 
 tools = [StructuredTool.from_function(functionDatabase.search),
          StructuredTool.from_function(functionDatabase.find_dependency),
          StructuredTool.from_function(functionDatabase.search_function_outputs),
-        #  add_step_to_plan,
         add_multiple_steps_to_plan,
          finish_plan]
 
@@ -299,12 +285,6 @@ def execute_init(state: State):
         state["messages"].append(AIMessage(content="starting execution of plan."))
     execute_output = execute_subgraph.invoke(state)
     return execute_output
-    # state["plan_idx"] = execute_output["plan_idx"]
-    # return {"plan": execute_output["plan"],
-    #         "mode": EXECUTE,
-    #         "plan_idx": state["plan_idx"]}
-
-    return None
 
 
 def planning_execution_router(state: State):
@@ -320,81 +300,14 @@ graph_builder.add_node("initialization", initialization)
 graph_builder.add_node("chatbot", chatbot)
 tool_node = BasicToolNode(tools=tools)
 graph_builder.add_node("call_tools", tool_node)
-# graph_builder.add_node("execute_call", execute_call)
-# graph_builder.add_node("execute_ask_user", execute_ask_user)
-# graph_builder.add_node("execute_extract", execute_extract)
 graph_builder.add_node("execute_init", execute_init)
 
 # edges
 graph_builder.add_edge(START, "initialization")
 graph_builder.add_conditional_edges("initialization", planning_execution_router)
-# graph_builder.add_edge("initialization", "chatbot")
-# graph_builder.add_edge(START, "chatbot")
-# graph_builder.add_conditional_edges(START, planning_execution_router)
 graph_builder.add_conditional_edges("chatbot", chatbot_decide_next)
 graph_builder.add_conditional_edges("call_tools", tools_decide_next)
 graph_builder.add_edge("execute_init", END)
-# graph_builder.add_edge("call_tools", "chatbot")
 
-# compile with memory for messages
 graph = graph_builder.compile(checkpointer=memory)
 
-
-# state: messages, mode=planning or execution
-# when u return from planning subgraph, u should get a state obj, grab the last message
-# execute_subgraph = invoke 
-
-if __name__ == "__main__":
-    config = {"configurable": {"thread_id": "1"}}
-
-    # def stream_graph_updates(user_input: str):
-    #     for events in graph.stream({"messages": [{"role": "user", "content": user_input}]},
-    #                                config,
-    #                                stream_mode="updates"):
-    #         for value in events.values():
-    #             print("Assistant:", value["messages"][-1].content)
-
-    def stream_graph_updates(user_input: State):
-        for events in graph.stream(user_input,
-                                   config,
-                                   stream_mode="updates"):
-            for value in events.values():
-                if "messages" in value:
-                    print("Assistant:", value["messages"][-1].content)
-
-    # plan = []
-    
-    messages = [{'type': 'ai', 'content': 'execute_call', 'tool_calls': 
-                 [{'name': 'Search_Car_Location', 
-                   'args': {'query': 'San Diego Marriott La Jolla'}, 'id': '${1}', 'type': 'tool_call'}]},
-        {'tool_call_id': '${1}', 'role': 'tool', 'name': 'Search_Car_Location', 'content': '{"status": true, "message": "Success", "data": [{"city": "San Diego", "coordinates": {"longitude": -117.215935, "latitude": 32.873055}, "country": "United States", "name": "San Diego Marriott La Jolla"}]}'}]
-    # messages.append({"role": "user", "content": query})
-    plan = [{'id': 1, 'var': '${1}', 'action': 'call', 'tool': 'Search_Car_Location', 'args': {'query': 'San Diego Marriott La Jolla'}},
-    {'id': 2, 'var': '${2}', 'action': 'extract',
-        'source': '${1}', 'path': 'coordinates.latitude'},
-    {'id': 3, 'var': '${3}', 'action': 'extract',
-        'source': '${1}', 'path': 'coordinates.longitude'},
-    {'id': 4, 'var': '${4}', 'action': 'call', 'tool': 'Search_Car_Rentals', 'args': {'pick_up_date': '2024-10-14', 'pick_up_time': '08:00', 'drop_off_date': '2024-10-15',
-                                                                                        'drop_off_time': '08:00', 'pick_up_latitude': '${2}', 'pick_up_longitude': '${3}', 'drop_off_latitude': '${2}', 'drop_off_longitude': '${3}'}},
-    {'id': 5, 'var': '${5}', 'action': 'call', 'tool': 'Search_Car_Rentals', 'args': {'pick_up_date': '2024-10-15', 'pick_up_time': '08:00', 'drop_off_date': '2024-10-16', 'drop_off_time': '08:00', 'pick_up_latitude': '${2}', 'pick_up_longitude': '${3}', 'drop_off_latitude': '${2}', 'drop_off_longitude': '${3}'}}]
-
-    mode="execute"
-    plan_idx = 0
-    results_cache={}
-    user_input: State = {"plan": plan,
-                        "mode": mode,
-                        "plan_idx": plan_idx,
-                        "results_cache": results_cache,
-                        "messages": messages}
-    # user_input: State = {"messages": [{"role": "user", "content": "Today is October 13th, 2024. I want to rent a car for a day at the San Diego Marriott La Jolla. Could you compare the price differences for picking up the car at 8 AM tomorrow and the day after tomorrow at the same place for a 24-hour rental?"}]}
-    stream_graph_updates(user_input)
-
-
-    # while True:
-    #     user_input_message = input("User: ")
-    #     if user_input_message.lower() in ["quit", "exit", "q"]:
-    #         print("Goodbye!")
-    #         break
-    #     user_input: State = {"messages": [{"role": "user", "content": user_input_message}]}
-
-    #     stream_graph_updates(user_input)

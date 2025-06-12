@@ -43,20 +43,6 @@ from agent.state import State
 from itertools import product
 from dotenv import load_dotenv
 
-# class CacheEntry:
-#     def __init__(self, signature, data, parent_id):
-#         self.signature = signature
-#         self.data = data
-#         self.parent_id = parent_id
-
-
-# class ExecutorState(TypedDict):
-#     plan: List[Step]
-#     messages: Annotated[list, add_messages]
-#     mode: str
-#     plan_idx: int
-#     results_cache: Dict
-#     # results_cache: Dict[str, CacheEntry]
 
 
 tools = []
@@ -65,17 +51,6 @@ load_dotenv()
 memory = MemorySaver()
 llm = ChatOpenAI(model=GPT_4o)
 llm_with_tools = llm.bind_tools(tools)
-
-# # TODO: Fix prompt
-# with open(PLANNING_AGENT_PROMPT, "r") as f:
-#     execute_prompt = f.read()
-
-# prompt_template = ChatPromptTemplate([
-#     ("system", execute_prompt),
-#     MessagesPlaceholder("msgs")
-# ])
-
-# execute_call_prompt_llm = prompt_template | llm_with_tools
 
 
 def execute_call_by_llm(state: State):
@@ -176,7 +151,6 @@ def execution_router(state: State):
     elif state['plan'][plan_idx]['action'] == 'call':
         needs_llm = False
         for arg in state['plan'][plan_idx]['args'].values():
-            # import pdb; pdb.set_trace()
             if isinstance(arg, str) and '$' == arg[0] and "@d" in state["results_cache"][arg][1].split(".")[0]:
                 needs_llm = True
                 break
@@ -216,13 +190,7 @@ def execute_answer_question(state: State):
             all_args[arg_name] = (state["results_cache"][arg][1], state["results_cache"][arg][0])
         else:
             all_args[arg_name] = (state["results_cache"][arg][1], arg)
-    # all_args_product = product(*all_args)
-    # all_args_dict = []
-    # for i, all_arg in enumerate(all_args_product):
-    #     args_dict = {}
-    #     for arg, arg_name in zip(all_arg,  step["args"]):
-    #         args_dict[arg_name] = arg
-    #     all_args_dict.append(args_dict)
+
     
     response = answer_question_llm_chain.invoke({"query": step["query"],
                 "strategy": step["strategy"],
@@ -238,8 +206,6 @@ def execute_call(state: State):
     all_args = []
     for arg_name in step["args"]:
         arg = step["args"][arg_name]
-        # if isinstance(arg, str) and '$' == arg[0] and "@d" not in state["results_cache"][arg][1].split(".")[0]:
-        #     step["args"][arg_name] = state["results_cache"][arg][0]
         if isinstance(arg, str) and '$' == arg[0]:
             if "@d" not in state["results_cache"][arg][1]:
                 all_args.append([state["results_cache"][arg][0]])
@@ -262,18 +228,8 @@ def execute_call(state: State):
                         id=tool_id)
         tool_calls.append(tool_call)
 
-
-    # tool_call = ToolCall(name=step['tool'],
-    #                      args=step["args"],
-    #                      id=step["var"])
     return {"messages": [AIMessage(content="execute_call", tool_calls=tool_calls)]}
 
-# class APIStep(TypedDict):
-#     id: int
-#     var: str
-#     action: Literal['call']  # 'call', 'extract', 'ask_user'
-#     tool: str
-#     args: Dict[str, Union[str, float, int, bool]]
 
 
 def execute_ask_user(state: State):
@@ -296,7 +252,6 @@ def execute_extract(state: State):
         state['plan_idx'] += 1
         state['retry_count'] = 0
     except Exception as e:
-        # import pdb; pdb.set_trace()
         state['failure'] = str(e)
     return state
 
@@ -306,18 +261,7 @@ def execute_extract_decide_next(state: State):
     else:
         return "execute_init"
 
-    # plan_idx = state['plan_idx']
-    # step: ExtractStep = state['plan'][plan_idx]  # type: ignore
 
-    # if "@d" in state["results_cache"][step['source']][1]:
-    #     temp_outputs = []
-    #     for current in state["results_cache"][step['source']][0]:
-    #         temp_outputs.append(extract_from_basemodel(state["results_cache"][step['source']][0], step['path']))
-    # else:
-    #     state["results_cache"][step['var']] = extract_from_basemodel(
-    #         state["results_cache"][step['source']][0], step['path'])
-    # state['plan_idx'] += 1
-    # return state
 
 
 def execute_init(state: State):
@@ -331,7 +275,6 @@ functionDatabase = FunctionDatabase(TEXT_EMBEDDING_3_LARGE,
                                     NAME_TO_FUNCTION_JSON_PATH )
 
 def handle_tool_responses(state: State):
-    # import pdb; pdb.set_trace()
     step = state["plan"][state["plan_idx"]]
     assert step['action'] == "call"
     starting_tool_message_id = len(state["messages"])-1
@@ -349,7 +292,6 @@ def handle_tool_responses(state: State):
         if output_repr:
             temp_outputs.append(output_repr.model_validate({"data": tool_message_content["data"]}).model_dump())
             
-            # state["messages"].append(AIMessage(content=f"Successfully called and processed call (ID: {tool_message.tool_call_id})."))
         else:
             raise Exception(f"Couldn't create output_repr from response of this step:{step}")
         
@@ -360,29 +302,12 @@ def handle_tool_responses(state: State):
         state['results_cache'][tool_call_id] = [temp_outputs[0], tool_call_id]
     state["messages"].append(AIMessage(content=f"Successfully called and processed call (ID: {tool_call_id})."))
 
-        # output_repr.model_validate({"data": tool_message_content["data"]}), state["messages"][i].tool_message_id]
     
     state["plan_idx"] += 1
 
 
-    # expected_output = functionDatabase.name_to_function[function_name].output
-    # if expected_output:
-    #     state['results_cache'][tool_message["id"]] = expected_output.model_validate(tool_message)
-    #     state["plan_idx"] += 1
-    # else:
-    #     print("couldn't find the expected output")
     return state
 
-# def initial_routing(state: State):
-#     last_message = state["messages"][-1]
-#     if isinstance(last_message, ToolMessage):
-#         if "error" in last_message.content:
-#             return "execute_call_by_llm"
-#         return "handle_tool_responses"
-#     else:
-#         return "execution_router"
-#     # if the message is a tool result, go to adding to cache (checks if it has error)
-#     # otherwise go to execute_extract
 
 extract_step_llm = llm.with_structured_output(ExtractStep)
 with open(EXTRACT_RETRY_AGENT_SYSTEM_PROMPT, "r") as f:
@@ -397,7 +322,6 @@ extract_retry_prompt_template = ChatPromptTemplate([
 ])
 extract_step_llm_chain =  extract_retry_prompt_template | extract_step_llm
 def handle_extraction_errors(state: State):
-    # import pdb; pdb.set_trace()
     if state["retry_count"] >= 3:
         raise Exception(f"Trying to address error {state['failure']} but reached retry maximum of {3}.")
     state["retry_count"] += 1
@@ -431,10 +355,8 @@ graph_builder.add_conditional_edges("handle_tool_responses", execution_router)
 graph_builder.add_conditional_edges("execute_init", execution_router)
 graph_builder.add_conditional_edges(
     "execute_call_by_llm", execute_call_by_llm_decide_next)
-# graph_builder.add_edge("execute_call", "call_tools")
 graph_builder.add_edge("execute_call", END)
 graph_builder.add_conditional_edges("call_tools", tools_decide_next)
-# graph_builder.add_edge("execute_extract", "execute_init")
 graph_builder.add_conditional_edges("execute_extract", execute_extract_decide_next)
 graph_builder.add_conditional_edges("execute_answer_question", execution_router)
 graph_builder.add_edge("handle_extraction_errors", "execute_init")
@@ -455,12 +377,7 @@ if __name__ == "__main__":
             for value in events.values():
                 print("Assistant:", value["messages"][-1].content)
 
-    # while True:
-    #     user_input = input("User: ")
-    #     if user_input.lower() in ["quit", "exit", "q"]:
-    #         print("Goodbye!")
-    #         break
-    #     stream_graph_updates(user_input)
+
     user_input_message = input("User: ")
     plan = [{'id': 1, 'var': '${1}', 'action': 'call', 'tool': 'Search_Car_Location', 'args': {'query': 'San Diego Marriott La Jolla'}},
         {'id': 2, 'var': '${2}', 'action': 'extract',
