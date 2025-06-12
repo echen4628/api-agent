@@ -66,24 +66,27 @@ def convert_message(message):
 
 @app.post("/invoke")
 async def invoke_custom(request: Request):
+    # try:
     payload = await request.json()
     input_data = payload.get("input", "")
     config_data = payload.get("config", "")
     tools = payload.get("tools", None)
 
-    # import pdb; pdb.set_trace()
     functionDatabase.set_tool_limitations(tools)
     result = graph.invoke(input_data, config=config_data)
-    # import pdb; pdb.set_trace()
 
     # convert messages
     result["messages"] = [convert_message(message) for message in result["messages"]]
     result["results_cache"] = {}
-    print("all done!!!")
     return JSONResponse({
         "status": "success",
         "output": result
     })
+    # except Exception as e:
+    #     return JSONResponse({
+    #         "status": "failed",
+    #         "output": str(e)
+    #     })
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

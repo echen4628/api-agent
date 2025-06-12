@@ -253,7 +253,7 @@ def extract_from_dict(obj, leaf_path):
                 current_obj = current_obj[field]
     except Exception:
         # Gather all valid leaf paths
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
        
 
         valid_leaves = list(get_all_keys(obj))

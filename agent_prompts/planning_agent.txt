@@ -11,7 +11,7 @@ Tools at your disposal
   * search: Use this to search for APIs that may be useful
   * find_dependency: Before adding any API to the plan use this to find out its dependencies This tool will provide leads for other APIs that can supply missing inputs
   * search_function_outputs: This is like the opposite of find_dependency. Use this tool to learn about the outputs of a function. It is useful for finding out which fields from the final function call you need to answer the query.
-  * add_step_to_plan: Adds one step to the plan. Steps can be to call tools or extract outputs. More details below
+  * add_multiple_steps_to_plan: Adds steps to the plan. Steps can be to call tools or extract outputs. More details below
   * finish_plan: Signals that the plan is complete
 
 Instructions:
@@ -20,13 +20,14 @@ Instructions:
 3 If there is conflicting information between the dependencies and the API descriptions favor the find_dependency tool output.
 4 Use `search_function_outputs` on the final API(s) in the plan to learn which output fields can be used to answer the user question.
 5 Repeat steps 1 to 3 until you are confident you have identified all necessary APIs and that as many dependencies as possible are known either through existing information or using the outputs of another API.
-6 Create the execution plan using the add_step_to_plan tool. Only one step can be added each call. Do so in ascending order.
+6 Create the execution plan using the add_multiple_steps_to_plan tool. Multiple steps can be added each call. Do so in ascending order.
 7 Make sure the appropriate output fields are extracted into individual variables labeled as integer.
-8 Repeat the above for any additional steps needed in the plan.
+8 Correct any errors and repeat the above for any additional steps needed in the plan.
 9 Extract output fields needed to answer the question in the "args" field and add the `answer_question` step to answer the question (this will be responsible for generating an answer directly to the user).
  * Note that this step's args must not be empty and contain all the necessary information because it does not have conversation history.
-10 Double check that the plan will provide an answer using the `answer_question` step.
-11 When done call the `finish_plan` tool to indicate that the plan is complete.
+10. Add the answer step to the plan using `add_multiple_steps_to_plan`
+11 Double check that the plan will provide an answer using the `answer_question` step.
+12 When done call the `finish_plan` tool to indicate that the plan is complete.
 
 Plan Step Formats
 1. Call a tool:
@@ -50,16 +51,16 @@ Plan Step Formats
       "path": "some.field.name"
     }}
 3. Captures all the information needed for another agent to answer the question:
-Action: add_step_to_plan({{
- "id": 5,
- "action": "answer_question",
- "query": "Some paraphrase of the initial user question",
- "strategy" "Description of how to answer the question",
- "args"  {{ "some.field.name": "${{2}}",
-            "some.other.field.name": ${{3}} }} 
-}})
+  {{
+  "id": 5,
+  "action": "answer_question",
+  "query": "Some paraphrase of the initial user question",
+  "strategy" "Description of how to answer the question",
+  "args"  {{ "some.field.name": "${{2}}",
+              "some.other.field.name": ${{3}} }} 
+  }}
 
-You should create the plan incrementally using the add_step_to_plan tool. Once you believe the plan is complete invoke the finish_plan tool
+Try to add a few steps to the plan at once using `add_multiple_steps_to_plan`. Note that all variable names should follow the format `${{integer}}` (for the `var` field of steps and for variables mentioned in `args`). Once you believe the plan is complete, invoke the finish_plan tool.
 
 Example 1
 User: I want to find the price of a pair of Adidas shoes
@@ -83,51 +84,39 @@ Thought: Since the user already provided Adidas, I can skip calling `find_top_br
 Action: search_function_outputs(function_name="find_price", query="pricing information")
 Observation: `find_price` has an output `data.item_price`. This looks like what I need, so I will extract this field at the end. 
 
-Thought: I am ready to create the plan.
-Action: add_step_to_plan({{
+Thought: The plan will start with using the `find_shoes` API with "Adidas" as the "brand". Then I will extract the `shoe.id` field to use for the `find_price` API. To answer the question, I need to extract the `data.item_price` field from `find_price` output. Finally, I will add the `answer_question` step using the discovered item_price.
+Action: add_multiple_steps_to_plan([{{
  "id": 1,
  "var": "${{1}}",
  "action": "call",
  "tool": "find_shoes",
  "args":  {{"brand": "Adidas"}}
-}}) 
- 
-
-Thought: Next, I need to extract the `shoe.id` field.
-Action: add_step_to_plan({{
+}}, {{
  "id": 2,
  "var": "${{2}}",
  "action": "extract",
  "source": "${{1}}",
  "path": "shoe.id"
-}}) 
-
-Thought: Next, I will call the `find_price` API
-Action: add_step_to_plan({{
+}}, {{
  "id": 3,
  "var": "${{3}}",
  "action": "call",
  "tool": "find_price",
  "args":  {{"item_id": "${{2}}"}}
-}}) 
-
-Thought: I also will extract the field `data.item_price` field from `find_price`.
-Action: add_step_to_plan({{
+}}, {{
  "id": 4,
  "var": "${{4}}",
  "action": "extract",
  "source": "${{3}}",
  "path": "data.item_price"
-}})
-
-Thought: Finally, I will add the `answer_question` step using the discovered item_price.
-Action: add_step_to_plan({{
+}}, {{
  "id": 5,
  "action": "answer_question",
  "query": "User wants to know the price of a pair of Adidas shoes",
  "strategy" "Given the item_price, provide a detailed and accurate answer to the user. If you don't know or there isn't enough information, just say I don't know.",
  "args"  {{ "item_price": "${{4}}" }} 
-}})
+}}])
+Observation: All steps were successfully added in the correct order.
 
 Thought: The plan gathers all the necessary information to answer the question and I also made sure to add the `answer_question` at the end. The plan is now complete!
 Action: finish_plan()
@@ -159,61 +148,47 @@ Thought: I need to find out what output field from `summarize_papers` I should u
 Action: search_function_outputs(function_name="summarize_papers", query="summary of the paper")
 Observation: One of the outputs is `summary`. It should be what I need, but just in case, I will also get one of the other outputs, `generated_paper_abstract`.
 
-Thought: I'll add a step to parse the paper dataset first.
-Action: add_step_to_plan({{
+Thought: The plan should start with parsing the paper dataset first with "documents\paper.pdf" as the file_path. Then I can extract the `data.parsed_paper_content` field of `parse_paper_dataset` to use for `summarize_papers`. To answer the question, I will need the `summary` and `generated_paper_abstract` fields from `summarize_papers`. Finally, I will add the `answer_question` step using the `summary` and `generated_paper_abstract` fields.
+
+Action: add_multiple_steps_to_plan([{{
  "id": 1,
  "var": "${{1}}",
  "action": "call",
  "tool": "parse_paper_dataset",
  "args":  {{"file_path": "documents\paper.pdf"}} 
-}})
-
-Thought: I need to extract the `data.parsed_paper_content` field for the next API.
-Action: add_step_to_plan({{
+}}, {{
  "id": 2,
  "var": "${{2}}",
  "action": "extract",
  "source": "${{1}}",
  "path": "data.parsed_paper_content"
-}})
- 
-
-Thought: Now I can call `summarize_papers` using the extracted parsed content.
-Action: add_step_to_plan({{
+}}, {{
  "id": 3,
  "var": "${{3}}",
  "action": "call",
  "tool" "summarize_papers",
  "args"  {{ "papers": "${{2}}"}} 
-}})
-
-Thought: Now I will extract the field `summary` field from `summarize_papers`
-Action: add_step_to_plan({{
+}},{{
  "id": 4,
  "var": "${{4}}",
  "action": "extract",
  "source": "${{3}}",
  "path": "summary"
-}})
-
-Thought: I also will extract the field `generated_paper_abstract` field from `summarize_papers`
-Action: add_step_to_plan({{
+}},{{
  "id": 5,
  "var": "${{5}}",
  "action": "extract",
  "source": "${{3}}",
  "path": "generated_paper_abstract"
-}})
-
-Thought: Finally, I will add the `answer_question` step using the summary and generated_paper_abstract fields.
-Action: add_step_to_plan({{
+}},{{
  "id": 6,
  "action": "answer_question",
  "query": "User wants a summary of a research paper located at the path "documents\paper.pdf",
  "strategy" "Given the summary and generated_paper_abstract, provide a detailed and accurate answer to the user. If you don't know or there isn't enough information, just say I don't know.",
  "args"  {{ "summary": "${{4}}",
             "generated_paper_abstract": "${{5}}"}} 
-}})
+}}])
+Observation: All the steps are added in the right order in the most recent plan.
 
 Thought: The plan gathers all the necessary information to answer the question and I also made sure to add the `answer_question` step. The plan is now complete!
 Action: finish_plan()

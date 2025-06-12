@@ -1,6 +1,6 @@
 import json
-from langchain_core.messages import ToolMessage
-from typing import Annotated
+from langchain_core.messages import ToolMessage, AIMessage
+from typing import Annotated, Tuple
 
 from typing_extensions import TypedDict
 
@@ -75,36 +75,112 @@ class AddStepToPlan(BaseModel):
 
 
 @tool(args_schema=AddStepToPlan)
-def add_step_to_plan(plan_step, steps) ->str:
+def add_step_to_plan(plan_step, steps) ->Tuple[str, List]:
     try:
         # check if the extract makes sense
         if plan_step["action"] == "answer_question" and plan_step["args"] == {}:
             return f"Failed to add step. This answer_question step does not contain any arguments for the agent answering the question. Please fill the 'args' fields with all the necessary variables to answer the question.", steps
         elif plan_step["action"] == "call":
-            import pdb; pdb.set_trace()
             function_inputs = functionDatabase.name_to_function[plan_step["tool"]].parameter_leaves
 
             if len(plan_step["args"]) < len(function_inputs.keys()):
-                return f"Failed to add step. This function call is missing at least one arguments. Expected arguments with the following description: {function_inputs}. Received {plan_step['args'].keys()}."
+                return f"Failed to add step. This function call is missing at least one argument. Expected arguments with the following description: {function_inputs}. Received {plan_step['args'].keys()}.", steps
             elif len(plan_step["args"]) > len(function_inputs.keys()):
-                return f"Failed to add step. This function call has too many arguments. Expected arguments with the following description: {function_inputs}. Received {plan_step['args'].keys()}."
+                return f"Failed to add step. This function call has too many arguments. Expected arguments with the following description: {function_inputs}. Received {plan_step['args'].keys()}.", steps
         steps.append(plan_step)
         return f"Successfully added step. Now, the plan has {len(steps)} steps. The latest few steps are:\n{extract_last_k_steps(3, steps)}", steps
     except Exception as e:
-        import pdb; pdb.set_trace()
         return str(e), steps
+    
+class AddMultipleStepsToPlan(BaseModel):
+    """
+    Tool that adds a subsequent PlanStep object to the linear execution plan.
+    """
 
-@tool
-def finish_plan() ->str:
+    plan_steps: List[Step] = Field(..., description="A series of next steps in order.")
+    steps: Annotated[List, InjectedToolArg] = Field(..., description="The overall plan")
+
+@tool(args_schema=AddMultipleStepsToPlan)
+def add_multiple_steps_to_plan(plan_steps, steps) -> Tuple[str, List]:
+    completed = 0
+    existing_variables = set()
+    api_response_variables = set()
+    for existing_step in steps:
+        existing_variables.add(existing_step["var"])
+        if existing_step["action"] == "call":
+            api_response_variables.add(existing_step["var"])
+    for plan_step in plan_steps:
+        try:
+            if plan_step["action"] == "answer_question" and plan_step["args"] == {}:
+                return f"Failed to add step: {plan_step}, because this `answer_question` step does not contain any arguments for the agent answering the question. Please fill the 'args' fields with all the necessary variables to answer the question.\n\nThe latest successfully added steps are:\n{extract_last_k_steps(3, steps)}.", steps
+            elif plan_step["action"] == "call":
+                function_inputs = functionDatabase.name_to_function[plan_step["tool"]].parameter_leaves
+                if len(plan_step["args"]) < len(function_inputs.keys()):
+                    return f"Failed to add step: {plan_step}, because this function call is missing at least one argument. Expected arguments with the following description: {function_inputs}.  Received {plan_step['args'].keys()}.\n\nThe latest successfully added steps are:\n{extract_last_k_steps(3, steps)}.", steps
+                elif len(plan_step["args"]) > len(function_inputs.keys()):
+                    return f"Failed to add step: {plan_step}, because this function call has too many arguments. Expected arguments with the following description: {function_inputs}.  Received {plan_step['args'].keys()}.\n\nThe latest successfully added steps are:\n{extract_last_k_steps(3, steps)}.", steps
+                errors = []
+                for arg in plan_step["args"].values(): 
+                    if "${" in arg and arg not in existing_variables:
+                        errors.append(arg)
+                if errors:
+                    return f"Failed to add step: {plan_step}, because its argument names do not exist: {errors}. Please make sure to extract from the following existing ones first: {existing_variables}.\n\nThe latest successfully added steps are:\n{extract_last_k_steps(3, steps)}.", steps
+            elif plan_step["action"] == "extract":
+                if plan_step["source"] not in api_response_variables:
+                    # import pdb; pdb.set_trace()
+                    return f"Failed to add step: {plan_step}, because its source ({plan_step['source']}) is not the output of a call step. Please make sure to extract from the relevant call step var: {api_response_variables}.\n\nThe latest successfully added steps are:\n{extract_last_k_steps(3, steps)}.", steps
+            elif plan_step["action"] == "answer_question":
+                errors = []
+                for arg in plan_step["args"].values(): 
+                    if "${" in arg and arg not in existing_variables:
+                        errors.append(arg)
+                if errors:
+                    return f"Failed to add step: {plan_step}, because its argument names do not exist: {errors}. Please make sure to extract from the following existing ones first: {existing_variables}.\n\nThe latest successfully added steps are:\n{extract_last_k_steps(3, steps)}.", steps
+            steps.append(plan_step)
+            existing_variables.add(plan_step["var"])
+            if plan_step["action"] == "call":
+                api_response_variables.add(plan_step["var"])
+            completed += 1
+        except Exception as e:
+            return str(e)+f"\n\nThe latest successfully added steps are:\n{extract_last_k_steps(3, steps)}.", steps
+    return f"Successfully added all steps. Now, the plan has {len(steps)} steps. The latest few steps are:\n{extract_last_k_steps(3, steps)}", steps
+
+# def verify_dependency_exists(step, plan):
+#     existing_variables = set()
+#     for existing_step in plan:
+#         existing_variables.add(existing_step["var"])
+#     errors = []
+#     for args in step["args"]: 
+#         if args not in existing_variables:
+#             errors.append(args)
+#     if errors:
+#         return f"The following argument names do not exist: {errors}. Please make sure to extract from the following existing ones first: {existing_variables}"
+#     else:
+#         return ""
+
+class FinishPlan(BaseModel):
     '''
-    Notify the user the plan has been finished
+    Notify the user the plan has been finished.
     '''
+
+    steps: Annotated[List, InjectedToolArg] = Field(..., description="The overall plan")
+
+@tool(args_schema=FinishPlan)
+def finish_plan(steps) -> Tuple[str, str]:
+    if len(steps) == 0:
+        return "The plan is empty and does not end with `answer_question`. Please complete the plan and then try again.", PLANNING
+    elif steps and steps[-1]["action"] == "answer_question":
+        return "successfully, finished plan", EXECUTE
+    else:
+        return "Does not end the plan with `answer_question`. Please complete the plan with that step and try again.", PLANNING
+
     return "plan finished"
 
 tools = [StructuredTool.from_function(functionDatabase.search),
          StructuredTool.from_function(functionDatabase.find_dependency),
          StructuredTool.from_function(functionDatabase.search_function_outputs),
-         add_step_to_plan,
+        #  add_step_to_plan,
+        add_multiple_steps_to_plan,
          finish_plan]
 
 memory = MemorySaver()
@@ -122,11 +198,9 @@ react_llm = prompt_template | llm_with_tools
 
 
 def chatbot(state: State):
-    # import pdb; pdb.set_trace()
     return {"messages": [react_llm.invoke({"msgs": state["messages"]})]}
 
 def chatbot_decide_next(state: State):
-    # import pdb; pdb.set_trace()
     ai_message = state["messages"][-1]
     if hasattr(ai_message, "tool_calls") and len(ai_message.tool_calls) > 0:
         return "call_tools"
@@ -148,17 +222,18 @@ class BasicToolNode:
         print('there was a tool call')
         for tool_call in message.tool_calls:
             try:
-                if tool_call["name"] == "add_step_to_plan":
+                if tool_call["name"] == "add_step_to_plan" or tool_call["name"] == "add_multiple_steps_to_plan":
                     tool_call["args"]["steps"] = state.get("plan", [])
                     tool_result, steps = self.tools_by_name[tool_call["name"]].invoke(
                         tool_call["args"]
                     )
                     state["plan"] = steps
                 elif tool_call["name"] == "finish_plan":
-                    tool_result = self.tools_by_name[tool_call["name"]].invoke(
+                    tool_call["args"]["steps"] = state.get("plan", [])
+                    tool_result, state['mode'] = self.tools_by_name[tool_call["name"]].invoke(
                         tool_call["args"]
                     )
-                    state['mode'] = EXECUTE
+                    # state['mode'] = EXECUTE
                 else:
                     tool_result = self.tools_by_name[tool_call["name"]].invoke(
                         tool_call["args"]
@@ -170,9 +245,15 @@ class BasicToolNode:
                         tool_call_id=tool_call["id"],
                     )
                 )
-            except:
-                print("ERROR!")
-                import pdb; pdb.set_trace()
+            except Exception as e:
+                outputs.append(
+                    ToolMessage(
+                        content=json.dumps(str(e)),
+                        name=tool_call["name"],
+                        tool_call_id=tool_call["id"],
+                    )
+                )
+                print(f"Got an error during tool call {tool_call['name']}: {e}")
         return {"messages": outputs, "plan": state["plan"], 'mode': state['mode']}
 
 # def decide_start(state: State):
@@ -182,7 +263,6 @@ class BasicToolNode:
 #     # else call the the api chatbot
 #     pass
 def initialization(state: State):
-    # import pdb; pdb.set_trace()
     plan = state.get("plan", [])
     if state.get("mode") != PLANNING and state.get("mode") != EXECUTE:
         mode = PLANNING
@@ -199,7 +279,6 @@ def initialization(state: State):
             "retry_count": 0}
 
 def tools_decide_next(state: State):
-    # import pdb; pdb.set_trace()
     if state["mode"] == EXECUTE:
         return "execute_init"
     elif state["mode"] == PLANNING:
@@ -208,17 +287,19 @@ def tools_decide_next(state: State):
         raise ValueError
 
 def execute_init(state: State):
-    # import pdb; pdb.set_trace()
     print("call the other graph here")
     # user_input = {"plan": state["plan"],
     #               "mode": EXECUTE,
     #               "plan_idx": state["plan_idx"],
     #               "results_cache": {},
     #             "messages": [{"role": "user", "content": ""}]}
+    last_message = state["messages"][-1]
+    # import pdb; pdb.set_trace()
+    if isinstance(last_message, ToolMessage) and last_message.name == "finish_plan":
+        state["messages"].append(AIMessage(content="starting execution of plan."))
     execute_output = execute_subgraph.invoke(state)
     return execute_output
     # state["plan_idx"] = execute_output["plan_idx"]
-    # import pdb; pdb.set_trace()
     # return {"plan": execute_output["plan"],
     #         "mode": EXECUTE,
     #         "plan_idx": state["plan_idx"]}
@@ -227,7 +308,6 @@ def execute_init(state: State):
 
 
 def planning_execution_router(state: State):
-    # import pdb; pdb.set_trace()
     last_message = state["messages"][-1]
     if isinstance(last_message, ToolMessage):
         return "execute_init"

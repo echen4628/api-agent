@@ -103,8 +103,6 @@ class BasicToolNode:
             raise ValueError("No message found in input")
         outputs = []
         print('there was a tool call')
-        # import pdb
-        # pdb.set_trace()
         has_failures = False
         for tool_call in message.tool_calls:
             try:
@@ -120,8 +118,6 @@ class BasicToolNode:
                     )
                     state['mode'] = EXECUTE
                 elif tool_call["name"] in name_to_functions:
-                    # import pdb
-                    # pdb.set_trace()
                     tool_result_as_model: BaseModel = name_to_functions[tool_call["name"]](
                         **tool_call["args"])
                     state['results_cache'][tool_call["id"]] = tool_result_as_model
@@ -156,8 +152,6 @@ class BasicToolNode:
 
 def tools_decide_next(state: State):
     if state["mode"] == EXECUTE:
-        # import pdb
-        # pdb.set_trace()
         return "execute_init"
     elif state["mode"] == PLANNING:
         return "chatbot"
@@ -166,9 +160,8 @@ def tools_decide_next(state: State):
 
 
 def execution_router(state: State):
-    # import pdb; pdb.set_trace()
     last_message = state["messages"][-1]
-
+    # import pdb; pdb.set_trace()
     # First check if the execution is in progress already
     if isinstance(last_message, ToolMessage):
         if "error" in last_message.content:
@@ -183,6 +176,7 @@ def execution_router(state: State):
     elif state['plan'][plan_idx]['action'] == 'call':
         needs_llm = False
         for arg in state['plan'][plan_idx]['args'].values():
+            # import pdb; pdb.set_trace()
             if isinstance(arg, str) and '$' == arg[0] and "@d" in state["results_cache"][arg][1].split(".")[0]:
                 needs_llm = True
                 break
@@ -214,7 +208,6 @@ answer_question_llm_chain =  answer_question_prompt_template | llm
 def execute_answer_question(state: State):
     plan_idx = state['plan_idx']
     step: AnswerQuestionStep = state['plan'][plan_idx]  # type: ignore
-    import pdb; pdb.set_trace()
     all_args = {}
     for arg_name in step["args"]:
         arg = step["args"][arg_name]
@@ -223,7 +216,6 @@ def execute_answer_question(state: State):
             all_args[arg_name] = (state["results_cache"][arg][1], state["results_cache"][arg][0])
         else:
             all_args[arg_name] = (state["results_cache"][arg][1], arg)
-    import pdb; pdb.set_trace()
     # all_args_product = product(*all_args)
     # all_args_dict = []
     # for i, all_arg in enumerate(all_args_product):
@@ -240,7 +232,6 @@ def execute_answer_question(state: State):
 
 
 def execute_call(state: State):
-    # import pdb; pdb.set_trace()
     plan_idx = state['plan_idx']
     step: APIStep = state['plan'][plan_idx]  # type: ignore
 
@@ -256,7 +247,6 @@ def execute_call(state: State):
                 all_args.append(state["results_cache"][arg][0])
         else:
             all_args.append([arg])
-    # import pdb; pdb.set_trace()
     all_args_product = product(*all_args)
     tool_calls = []
     for i, all_arg in enumerate(all_args_product):
@@ -291,23 +281,22 @@ def execute_ask_user(state: State):
 
 
 def execute_extract(state: State):
-    # import pdb; pdb.set_trace()
     plan_idx = state['plan_idx']
     step: ExtractStep = state['plan'][plan_idx]  # type: ignore
-    # import pdb
-    # pdb.set_trace()
+
     try:
-        if isinstance(state["results_cache"][step['source']][0], dict):
-            print(f"extract from a dictionary, {step['path']}")
-            state["results_cache"][step['var']] = extract_from_dict(
-            state["results_cache"][step['source']][0], step['path'])
-        else:
-            print(f"extract from a base model: {step['path']}")
-            state["results_cache"][step['var']] = extract_from_basemodel(
-            state["results_cache"][step['source']][0], step['path'])
+        # if isinstance(state["results_cache"][step['source']][0], dict):
+        print(f"extract from a dictionary, {step['path']}")
+        state["results_cache"][step['var']] = extract_from_dict(
+        state["results_cache"][step['source']][0], step['path'])
+        # else:
+        #     print(f"extract from a base model: {step['path']}")
+        #     state["results_cache"][step['var']] = extract_from_basemodel(
+        #     state["results_cache"][step['source']][0], step['path'])
         state['plan_idx'] += 1
         state['retry_count'] = 0
     except Exception as e:
+        # import pdb; pdb.set_trace()
         state['failure'] = str(e)
     return state
 
@@ -317,11 +306,9 @@ def execute_extract_decide_next(state: State):
     else:
         return "execute_init"
 
-    # import pdb; pdb.set_trace()
     # plan_idx = state['plan_idx']
     # step: ExtractStep = state['plan'][plan_idx]  # type: ignore
-    # # import pdb
-    # # pdb.set_trace()
+
     # if "@d" in state["results_cache"][step['source']][1]:
     #     temp_outputs = []
     #     for current in state["results_cache"][step['source']][0]:
@@ -358,42 +345,35 @@ def handle_tool_responses(state: State):
     for i in range(starting_tool_message_id, len(state["messages"])):
         tool_message = state["messages"][i]
         tool_message_content = from_json(tool_message.content)
-        # import pdb; pdb.set_trace()
         output_repr = parse_output_to_basemodel({"data": tool_message_content["data"]}, f"{function_name}_output")
         if output_repr:
-            try:
-                temp_outputs.append(output_repr.model_validate({"data": tool_message_content["data"]}))
-            except:
-                import pdb; pdb.set_trace()
+            temp_outputs.append(output_repr.model_validate({"data": tool_message_content["data"]}).model_dump())
+            
             # state["messages"].append(AIMessage(content=f"Successfully called and processed call (ID: {tool_message.tool_call_id})."))
         else:
-            print("couldn't find the expected output")
-            import pdb; pdb.set_trace()
+            raise Exception(f"Couldn't create output_repr from response of this step:{step}")
         
-        tool_call_id = state["messages"][i].tool_call_id
-        if has_list:
-            state['results_cache'][tool_call_id] = [temp_outputs, tool_call_id+"@d"]
-        else:
-            state['results_cache'][tool_call_id] = [temp_outputs[0], tool_call_id]
-        state["messages"].append(AIMessage(content=f"Successfully called and processed call (ID: {tool_call_id})."))
+    tool_call_id = state["messages"][starting_tool_message_id].tool_call_id
+    if has_list:
+        state['results_cache'][tool_call_id] = [temp_outputs, tool_call_id+"@d"]
+    else:
+        state['results_cache'][tool_call_id] = [temp_outputs[0], tool_call_id]
+    state["messages"].append(AIMessage(content=f"Successfully called and processed call (ID: {tool_call_id})."))
 
-            # output_repr.model_validate({"data": tool_message_content["data"]}), state["messages"][i].tool_message_id]
-        
-        state["plan_idx"] += 1
+        # output_repr.model_validate({"data": tool_message_content["data"]}), state["messages"][i].tool_message_id]
+    
+    state["plan_idx"] += 1
 
 
     # expected_output = functionDatabase.name_to_function[function_name].output
-    # # import pdb; pdb.set_trace()
     # if expected_output:
     #     state['results_cache'][tool_message["id"]] = expected_output.model_validate(tool_message)
     #     state["plan_idx"] += 1
     # else:
     #     print("couldn't find the expected output")
-    #     import pdb; pdb.set_trace()
     return state
 
 # def initial_routing(state: State):
-#     import pdb; pdb.set_trace()
 #     last_message = state["messages"][-1]
 #     if isinstance(last_message, ToolMessage):
 #         if "error" in last_message.content:
